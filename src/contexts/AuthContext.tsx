@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User } from '@supabase/supabase-js';
 import { getCurrentUser, onAuthStateChange, signInWithEmail, signUpWithEmail, signOut, resendConfirmation } from '@/lib/supabase';
+import { endUserSession } from '@/lib/user-menu-helpers';
 
 interface AuthContextType {
   user: User | null;
@@ -72,10 +73,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const handleSignOut = async () => {
     try {
+      console.log('🔐 [AuthContext] Logging out user...');
+      
+      // 세션 종료 및 통계 업데이트
+      if (user?.id) {
+        await endUserSession(user.id).catch(err => {
+          console.warn('⚠️ [AuthContext] Failed to end user session:', err);
+        });
+      }
+      
       await signOut();
       setUser(null);
+      console.log('✅ [AuthContext] User logged out successfully');
     } catch (error) {
-      console.error('Error signing out:', error);
+      console.error('❌ [AuthContext] Error signing out:', error);
     }
   };
 

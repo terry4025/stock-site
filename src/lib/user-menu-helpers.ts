@@ -1,4 +1,6 @@
 import { supabase } from './supabase';
+import { getUserSettings, getUserStatistics, updateUserStatistics, UserSettings } from './supabase-helpers';
+import { saveSettingsToLocal, loadSettingsFromLocal, getDefaultSettings } from './local-settings';
 
 // ============================================
 // 사용자 프로필 관리 (내 프로필)
@@ -435,34 +437,186 @@ export async function performSecureLogout(userId: string): Promise<{ success: bo
 // 통합 초기화 함수
 // ============================================
 
-// 사용자 첫 로그인 시 기본 데이터 초기화
-export async function initializeUserData(userId: string): Promise<{ success: boolean; error?: any }> {
-  try {
-    console.log('🔧 [Init] Initializing user data for:', userId);
+// 사용자 로그인 시 초기 설정 로드 및 적용
+export async function initializeUserData(userId: string): Promise<{
+  settings: UserSettings | null;
+  profile: any;
+  statistics: any;
+}> {
+  console.log('🚀 [UserMenuHelpers] Initializing user data for:', userId);
     
-    // 1. 기본 보안 설정 생성
-    await updateUserSecurity({
-      user_id: userId,
-      two_factor_enabled: false,
-      login_notifications: true,
-      security_alerts: true,
-      failed_login_attempts: 0
+  try {
+    // 병렬로 사용자 데이터 로드
+    const [settings, statistics] = await Promise.all([
+      getUserSettings(userId).catch(err => {
+        console.warn('⚠️ [UserMenuHelpers] Failed to load settings from DB:', err);
+        return null;
+      }),
+      getUserStatistics(userId).catch(err => {
+        console.warn('⚠️ [UserMenuHelpers] Failed to load statistics from DB:', err);
+        return null;
+      })
+    ]);
+
+    // 기존 함수 사용
+    const profile = await getUserProfile(userId).catch(err => {
+      console.warn('⚠️ [UserMenuHelpers] Failed to load profile from DB:', err);
+      return null;
     });
 
-    // 2. 로그인 이벤트 로깅
-    await logSecurityEvent(
-      userId,
-      'login',
-      'First login - account initialized',
-      true,
-      undefined,
-      navigator.userAgent
-    );
+    // 설정이 DB에 없으면 로컬 스토리지에서 로드 시도
+    let finalSettings = settings;
+    if (!settings) {
+      console.log('📱 [UserMenuHelpers] No DB settings found, trying localStorage');
+      const localSettings = loadSettingsFromLocal(userId);
+      if (localSettings) {
+        console.log('✅ [UserMenuHelpers] Using localStorage settings');
+        finalSettings = {
+          id: '',
+          user_id: userId,
+          theme: localSettings.theme,
+          language: localSettings.language,
+          default_view: localSettings.default_view,
+          refresh_interval: localSettings.refresh_interval,
+          risk_tolerance: localSettings.risk_tolerance,
+          investment_goals: localSettings.investment_goals,
+          data_sync: localSettings.data_sync,
+          analytics: localSettings.analytics,
+          auto_refresh: localSettings.auto_refresh,
+          notifications: localSettings.notifications,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+      } else {
+        console.log('📋 [UserMenuHelpers] Using default settings');
+        const defaultSettings = getDefaultSettings();
+        finalSettings = {
+          id: '',
+          user_id: userId,
+          ...defaultSettings,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+      }
+    }
 
-    console.log('✅ [Init] User data initialized successfully');
-    return { success: true };
+    console.log('✅ [UserMenuHelpers] User data initialized successfully');
+    return {
+      settings: finalSettings,
+      profile,
+      statistics
+    };
+
   } catch (error) {
-    console.error('❌ [Init] Error initializing user data:', error);
-    return { success: false, error };
+    console.error('❌ [UserMenuHelpers] Error initializing user data:', error);
+
+    // 최후 수단으로 기본값 반환
+    const defaultSettings = getDefaultSettings();
+    return {
+      settings: {
+        id: '',
+        user_id: userId,
+        ...defaultSettings,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      profile: null,
+      statistics: null
+    };
+  }
+}
+
+// 사용자 설정을 전역적으로 적용
+export function applyUserSettings(settings: UserSettings | null): void {
+  if (!settings) return;
+
+  console.log('🎨 [UserMenuHelpers] Applying user settings:', settings);
+
+  try {
+    // 테마 적용
+    if (settings.theme && settings.theme !== 'auto') {
+      document.documentElement.classList.remove('light', 'dark');
+      document.documentElement.classList.add(settings.theme);
+      console.log(`🎨 [UserMenuHelpers] Applied theme: ${settings.theme}`);
+    }
+
+    // 언어 설정 저장
+    if (settings.language) {
+      localStorage.setItem('kryptovision_language', settings.language);
+      console.log(`🌍 [UserMenuHelpers] Language set to: ${settings.language}`);
+    }
+
+    // 새로고침 간격 설정
+    if (settings.auto_refresh && settings.refresh_interval) {
+      window.dispatchEvent(new CustomEvent('refreshIntervalChanged', {
+        detail: { 
+          interval: settings.refresh_interval,
+          auto_refresh: settings.auto_refresh
+        }
+      }));
+      console.log(`🔄 [UserMenuHelpers] Refresh interval set to: ${settings.refresh_interval}s (auto: ${settings.auto_refresh})`);
+    }
+
+    console.log('✅ [UserMenuHelpers] Settings applied successfully');
+  } catch (error) {
+    console.error('❌ [UserMenuHelpers] Error applying settings:', error);
+  }
+}
+
+// 로그인 활동 통계 업데이트
+export async function updateLoginActivity(userId: string): Promise<void> {
+  try {
+    console.log('📊 [UserMenuHelpers] Updating login activity for:', userId);
+    
+    const now = new Date().toISOString();
+    const updates = {
+      last_login_at: now,
+      total_login_time: 0, // 이 값은 별도 로직으로 관리
+    };
+
+    await updateUserStatistics(userId, updates);
+    console.log('✅ [UserMenuHelpers] Login activity updated');
+  } catch (error) {
+    console.error('❌ [UserMenuHelpers] Error updating login activity:', error);
+  }
+}
+
+// 세션 시작 시간 저장 (로그아웃 시 계산용)
+export function startUserSession(userId: string): void {
+  try {
+    const sessionStart = Date.now();
+    sessionStorage.setItem(`session_start_${userId}`, sessionStart.toString());
+    console.log('⏰ [UserMenuHelpers] Session started at:', new Date(sessionStart));
+  } catch (error) {
+    console.error('❌ [UserMenuHelpers] Error starting session:', error);
+  }
+}
+
+// 세션 종료 및 시간 업데이트
+export async function endUserSession(userId: string): Promise<void> {
+  try {
+    const sessionStartStr = sessionStorage.getItem(`session_start_${userId}`);
+    if (!sessionStartStr) return;
+
+    const sessionStart = parseInt(sessionStartStr);
+    const sessionEnd = Date.now();
+    const sessionDuration = Math.round((sessionEnd - sessionStart) / 1000 / 60); // 분 단위
+
+    console.log(`⏰ [UserMenuHelpers] Session duration: ${sessionDuration} minutes`);
+
+    // 통계 업데이트
+    const currentStats = await getUserStatistics(userId);
+    if (currentStats) {
+      const updates = {
+        total_login_time: (currentStats.total_login_time || 0) + sessionDuration,
+      };
+      await updateUserStatistics(userId, updates);
+    }
+
+    // 세션 데이터 정리
+    sessionStorage.removeItem(`session_start_${userId}`);
+    console.log('✅ [UserMenuHelpers] Session ended and statistics updated');
+  } catch (error) {
+    console.error('❌ [UserMenuHelpers] Error ending session:', error);
   }
 } 

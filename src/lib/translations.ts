@@ -32,11 +32,12 @@ const translations = {
     ai_analysis_title: "AI Analysis",
     recommendation: "Recommendation",
     confidence: "Confidence",
+    sentiment: "Sentiment",
     summary: "Summary",
     buy: "Buy",
     hold: "Hold",
     sell: "Sell",
-    analysis_not_available: "Analysis is not available at this moment.",
+    analysis_not_available: "Analysis not available",
     news_sentiment_title: "News Sentiment",
     positive: "Positive",
     negative: "Negative",
@@ -49,14 +50,14 @@ const translations = {
     // AI Analysis Save
     save_analysis: "Save Analysis",
     saving_analysis: "Saving...",
-    save_success: "Analysis saved successfully!",
-    save_error: "Failed to save analysis",
-    analysis_saved_message: "This analysis has been saved to your history.",
+    save_success: "Analysis Saved",
+    save_error: "Save Failed",
+    analysis_saved_message: "Analysis has been saved to your history",
 
     // AI Analysis Loading
-    analyzing_sentiment: "Analyzing news sentiment...",
-    analyzing_technicals: "Analyzing technicals...",
-    analyzing_charts: "Analyzing chart data...",
+    analyzing_sentiment: "🧠 Analyzing news sentiment...",
+    analyzing_technicals: "📊 Analyzing technical indicators...",
+    analyzing_charts: "📈 Analyzing chart patterns...",
 
     // News
     latest_news_title: "Latest News",
@@ -104,6 +105,17 @@ const translations = {
     realtime_refresh: "Refresh",
     time_ago_seconds: "s ago",
     time_ago_minutes: "m ago",
+
+    // New investment information translations
+    short_term_target: "Short-term Target (3-6M)",
+    long_term_target: "Long-term Target (1-2Y)",
+    buy_price: "Recommended Buy Price",
+    sell_price: "Recommended Sell Price",
+    risk_level: "Risk Level",
+    risk_low: "Low Risk",
+    risk_medium: "Medium Risk",
+    risk_high: "High Risk",
+    investment_guidance: "Investment Guidance",
   },
   kr: {
     // Header & General
@@ -111,7 +123,7 @@ const translations = {
     toggle_language: "언어 변경",
     search_placeholder: "주식 검색 (예: AAPL)",
     export_csv: "CSV로 내보내기",
-    n_a: "해당 없음",
+    n_a: "정보 없음",
 
     // Stock Data Table
     market_cap: "시가총액",
@@ -138,11 +150,12 @@ const translations = {
     ai_analysis_title: "AI 분석",
     recommendation: "추천",
     confidence: "신뢰도",
+    sentiment: "시장심리",
     summary: "요약",
     buy: "매수",
     hold: "보유",
     sell: "매도",
-    analysis_not_available: "현재 분석을 이용할 수 없습니다.",
+    analysis_not_available: "분석 결과가 없습니다",
     news_sentiment_title: "뉴스 심리 분석",
     positive: "긍정적",
     negative: "부정적",
@@ -155,14 +168,14 @@ const translations = {
     // AI Analysis Save
     save_analysis: "분석 저장",
     saving_analysis: "저장 중...",
-    save_success: "분석이 성공적으로 저장되었습니다!",
-    save_error: "분석 저장에 실패했습니다",
-    analysis_saved_message: "이 분석이 기록에 저장되었습니다.",
+    save_success: "분석 저장 완료",
+    save_error: "저장 실패",
+    analysis_saved_message: "분석 결과가 히스토리에 저장되었습니다",
     
     // AI Analysis Loading
-    analyzing_sentiment: "뉴스 심리 분석중...",
-    analyzing_technicals: "기술적 분석중...",
-    analyzing_charts: "차트 분석중...",
+    analyzing_sentiment: "🧠 뉴스 심리 분석 중...",
+    analyzing_technicals: "📊 기술적 지표 분석 중...",
+    analyzing_charts: "📈 차트 패턴 분석 중...",
 
     // News
     latest_news_title: "최신 뉴스",
@@ -210,6 +223,17 @@ const translations = {
     realtime_refresh: "새로고침",
     time_ago_seconds: "초 전",
     time_ago_minutes: "분 전",
+
+    // New investment information translations
+    short_term_target: "단기 목표가 (3-6개월)",
+    long_term_target: "장기 목표가 (1-2년)",
+    buy_price: "추천 매수가",
+    sell_price: "추천 매도가",
+    risk_level: "투자 위험도",
+    risk_low: "낮은 위험",
+    risk_medium: "중간 위험",
+    risk_high: "높은 위험",
+    investment_guidance: "투자 가이드",
   },
 };
 

@@ -1,9 +1,11 @@
 "use client";
 
 import { useState, useEffect, Suspense, useRef } from "react";
-import { getAiAnalysis, getNewsSentiment, getRealtimeFearGreedIndex, getHeadlines, getStockAndChartData, getStockSpecificNews, getMarketNews } from "@/app/actions";
+import { getAiAnalysis, getNewsSentiment, getRealtimeFearGreedIndex, getHeadlines, getStockAndChartData, getStockSpecificNews, getMarketNews, startAutoNewsUpdate, getDynamicDateStatus, manualCheckForNewNews } from "@/app/actions";
 import { useLanguage } from "@/hooks/useLanguage";
+import { useAuth } from "@/contexts/AuthContext";
 import { type StockData, type NewsArticle, type ChartData, type ChartDataPoint } from "@/lib/types";
+import { initializeUserData, applyUserSettings, updateLoginActivity, startUserSession } from "@/lib/user-menu-helpers";
 
 import Header from "@/components/kryptovision/Header";
 import StockSearch from "@/components/kryptovision/StockSearch";
@@ -11,18 +13,20 @@ import GlobalIndices from "@/components/kryptovision/GlobalIndices";
 import FinancialChart from "@/components/kryptovision/FinancialChart";
 import StockDataTable from "@/components/kryptovision/StockDataTable";
 import AiAnalysis from "@/components/kryptovision/AiAnalysis";
-import NewsFeed from "@/components/kryptovision/NewsFeed";
+import NewsCards from "@/components/kryptovision/NewsCards";
+import SidebarInfo from "@/components/kryptovision/SidebarInfo";
 import FearGreedIndex from "@/components/kryptovision/FearGreedIndex";
 import RealtimeStatus from "@/components/kryptovision/RealtimeStatus";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { Newspaper, Terminal } from "lucide-react";
+import { Terminal } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { mockChartData, mockStockData, mockNewsData } from "@/lib/mock-data";
 import LoadingScreen from "./LoadingScreen";
 
 export default function DashboardClient({ initialData }: { initialData: any }) {
   const { t, language, setLanguage } = useLanguage();
+  const { user } = useAuth();
   
   const [isAppLoading, setIsAppLoading] = useState(true);
   const [ticker, setTicker] = useState("TSLA");
@@ -51,6 +55,109 @@ export default function DashboardClient({ initialData }: { initialData: any }) {
       setLanguage(initialData.language);
     }
   }, [initialData.language, setLanguage]);
+
+  // 🚀 앱 초기화 및 사용자 데이터 로드
+  useEffect(() => {
+    const initializeApp = async () => {
+      try {
+        console.log('🚀 [DashboardClient] Starting app initialization...');
+        
+        // 최소 로딩 시간 보장 (UX 개선)
+        const minLoadingPromise = new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // 사용자가 로그인되어 있으면 데이터 초기화
+        let userDataPromise = Promise.resolve();
+        if (user?.id) {
+          console.log('👤 [DashboardClient] User logged in, initializing user data...');
+          userDataPromise = initializeUserData(user.id).then(userData => {
+            console.log('📊 [DashboardClient] User data loaded:', userData);
+            
+            // 사용자 설정 적용
+            if (userData.settings) {
+              applyUserSettings(userData.settings);
+              
+              // 언어 설정이 있으면 적용
+              if (userData.settings.language && (userData.settings.language === 'kr' || userData.settings.language === 'en')) {
+                setLanguage(userData.settings.language as 'en' | 'kr');
+              }
+            }
+            
+            // 로그인 활동 업데이트
+            updateLoginActivity(user.id);
+            
+            // 세션 시작
+            startUserSession(user.id);
+          }).catch(err => {
+            console.warn('⚠️ [DashboardClient] Failed to load user data:', err);
+          });
+        }
+        
+        // 🚀 자동 뉴스 업데이트 시스템 시작 (타임아웃 에러 수정)
+        console.log('📰 [DashboardClient] Starting auto news update system...');
+        try {
+          const autoUpdateResult = await startAutoNewsUpdate();
+          console.log('📰 [DashboardClient] Auto news update result:', autoUpdateResult);
+        } catch (autoUpdateError) {
+          console.warn('⚠️ [DashboardClient] Auto news update failed:', autoUpdateError);
+          // 에러가 있어도 앱 초기화는 계속
+        }
+        
+        // 모든 초기화 작업 완료 대기
+        await Promise.all([minLoadingPromise, userDataPromise]);
+        
+        console.log('✅ [DashboardClient] App initialization completed');
+        setIsAppLoading(false);
+        
+      } catch (error) {
+        console.error('❌ [DashboardClient] Error during app initialization:', error);
+        // 에러가 있어도 로딩은 완료
+        setIsAppLoading(false);
+      }
+    };
+
+    initializeApp();
+  }, [user?.id, setLanguage]);
+
+  // 📰 새로운 뉴스 감지 이벤트 리스닝 (자동 뉴스 업데이트)
+  useEffect(() => {
+    const handleNewMarketNews = async (event: Event) => {
+      const customEvent = event as CustomEvent;
+      const { date, articles } = customEvent.detail;
+      console.log(`📰 [DashboardClient] New market news detected for ${date}:`, articles?.length || 0, 'articles');
+      
+      try {
+        // 마켓 뉴스 자동 업데이트
+        console.log('📰 [DashboardClient] Auto-refreshing market news...');
+        const freshMarketNews = await getMarketNews(language);
+        setMarketNews(freshMarketNews);
+        
+        // 주식별 뉴스도 업데이트 (현재 선택된 종목)
+        if (ticker) {
+          console.log(`📰 [DashboardClient] Auto-refreshing ${ticker} specific news...`);
+          const freshStockNews = await getStockSpecificNews(ticker, language);
+          setNewsData(freshStockNews);
+        }
+        
+        console.log('📰 [DashboardClient] News auto-refresh completed');
+        
+        // 사용자에게 알림 (옵션)
+        if (typeof window !== 'undefined') {
+          // 브라우저 알림이나 토스트 메시지로 새로운 뉴스 알림 가능
+          console.log('🔔 [DashboardClient] New market news available!');
+        }
+        
+      } catch (error) {
+        console.error('❌ [DashboardClient] Failed to auto-refresh news:', error);
+      }
+    };
+
+    // 새로운 뉴스 이벤트 리스너 등록
+    window.addEventListener('newMarketNewsAvailable', handleNewMarketNews);
+
+    return () => {
+      window.removeEventListener('newMarketNewsAvailable', handleNewMarketNews);
+    };
+  }, [language, ticker]);
 
   // 🔄 설정 변경 이벤트 리스닝 (새로고침 간격 업데이트)
   useEffect(() => {
@@ -179,20 +286,46 @@ export default function DashboardClient({ initialData }: { initialData: any }) {
       try {
         const analysisTicker = currentTicker === 'TSLL' ? 'TSLA' : currentTicker;
   
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Request timed out after 30 seconds.')), 30000)
-        );
-  
-        const dataPromise = Promise.all([
-          getStockAndChartData(currentTicker),
-          getStockSpecificNews(analysisTicker, language),
-          getMarketNews(language),
+                // 🚀 주식 데이터를 먼저 빠르게 로드
+        console.log(`📊 [DashboardClient] ${currentTicker} 주식 데이터 요청 시작...`);
+        const stockPromise = getStockAndChartData(currentTicker);
+        
+        // 🗞️ 뉴스 데이터는 병렬로 요청하되 개별 타임아웃 적용
+        console.log(`📰 [DashboardClient] ${analysisTicker} 뉴스 데이터 요청 시작...`);
+        const newsPromise = Promise.allSettled([
+          Promise.race([
+            getStockSpecificNews(analysisTicker, language),
+            new Promise<NewsArticle[]>((_, reject) => 
+              setTimeout(() => reject(new Error('Stock news timeout')), 45000)
+            )
+          ]),
+          Promise.race([
+            getMarketNews(language),
+            new Promise<NewsArticle[]>((_, reject) => 
+              setTimeout(() => reject(new Error('Market news timeout')), 25000)
+            )
+          ])
         ]);
-  
-        const [crawledResult, stockArticles, marketArticles] = await Promise.race([
-          dataPromise,
-          timeoutPromise
-        ]) as [{ stockData: StockData | null, chartData: ChartDataPoint[] }, NewsArticle[], NewsArticle[]];
+
+        // 주식 데이터는 빠른 타임아웃으로 처리
+        const crawledResult = await Promise.race([
+          stockPromise,
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Stock data timed out after 15 seconds.')), 15000)
+          )
+        ]) as { stockData: StockData | null, chartData: ChartDataPoint[] };
+
+        // 뉴스 데이터는 비동기로 처리
+        const newsResults = await newsPromise;
+        const stockArticles = newsResults[0].status === 'fulfilled' ? newsResults[0].value : [];
+        const marketArticles = newsResults[1].status === 'fulfilled' ? newsResults[1].value : [];
+        
+        if (newsResults[0].status === 'rejected') {
+          console.warn(`📰 [DashboardClient] 종목 뉴스 로드 실패:`, newsResults[0].reason);
+        }
+        if (newsResults[1].status === 'rejected') {
+          console.warn(`📈 [DashboardClient] 시장 뉴스 로드 실패:`, newsResults[1].reason);
+        }
   
         if (!isMounted || abortController.signal.aborted) return;
   
@@ -249,7 +382,15 @@ export default function DashboardClient({ initialData }: { initialData: any }) {
       setNewsSentiment(sentimentData);
       setLoadingSentiment(false);
       
-      const analysisData = await getAiAnalysis(stockData, chartData, sentimentData, language);
+      const analysisData = await getAiAnalysis(
+        stockData, 
+        chartData, 
+        sentimentData, 
+        language,
+        user?.id,
+        [...newsData, ...marketNews],
+        marketNews
+      );
       setAiAnalysis(analysisData);
       setLoadingAnalysis(false);
 
@@ -277,6 +418,7 @@ export default function DashboardClient({ initialData }: { initialData: any }) {
     console.log(`[실시간 업데이트] ${ticker} 실시간 업데이트 ${!isRealtimeEnabled ? '활성화' : '비활성화'}`);
   };
 
+  // 로딩 스크린 표시
   if (isAppLoading) {
     return <LoadingScreen onLoaded={() => setIsAppLoading(false)} />;
   }
@@ -288,15 +430,6 @@ export default function DashboardClient({ initialData }: { initialData: any }) {
         <div className="flex flex-col gap-4">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <StockSearch onSelectTicker={handleSelectTicker} currentTicker={ticker} />
-            <div className="flex items-center gap-2">
-              <Button asChild variant="outline" className="relative overflow-hidden group border-2 border-slate-600/50 bg-slate-800/30 backdrop-blur-sm text-slate-200 hover:border-orange-400 hover:text-white transition-all duration-500 shadow-lg hover:shadow-orange-500/30 hover:shadow-2xl">
-                <a href="https://futuresnow.gitbook.io/newstoday/2025-06-24/greeting/preview" target="_blank" rel="noopener noreferrer" className="relative z-10">
-                  <div className="absolute inset-0 bg-gradient-to-r from-orange-500/0 via-orange-500/0 to-orange-500/0 group-hover:from-orange-500/20 group-hover:via-orange-500/40 group-hover:to-orange-500/20 transition-all duration-500 -z-10"></div>
-                  <Newspaper className="mr-2 h-4 w-4 group-hover:rotate-12 transition-transform duration-300" />
-                  <span className="font-medium">{t('previous_day_summary')}</span>
-                </a>
-              </Button>
-            </div>
           </div>
           
           {/* 실시간 업데이트 상태 표시 */}
@@ -324,7 +457,9 @@ export default function DashboardClient({ initialData }: { initialData: any }) {
             <div className="grid gap-4 sm:grid-cols-1 md:grid-cols-1">
               {loading || chartData.length === 0 ? <Skeleton className="h-[450px] w-full" /> : <FinancialChart data={chartData} />}
             </div>
-            {loading || !stockData ? <Skeleton className="h-200px] w-full" /> : <StockDataTable data={stockData} />}
+            {loading || !stockData ? <Skeleton className="h-[200px] w-full" /> : <StockDataTable data={stockData} />}
+            {/* 📰 최신 뉴스 카드를 가격/볼륨 정보 아래로 이동 */}
+            <NewsCards news={newsData} marketNews={marketNews} loading={loadingNews} stockData={stockData} />
           </div>
           <div className="grid auto-rows-max items-start gap-4 md:gap-8">
             <Suspense fallback={<Skeleton className="h-[250px] w-full" />}>
@@ -342,9 +477,14 @@ export default function DashboardClient({ initialData }: { initialData: any }) {
                 chartTrend={(stockData?.dailyChange?.percentage || 0) > 0 ? 'uptrend' : (stockData?.dailyChange?.percentage || 0) < 0 ? 'downtrend' : 'sideways'}
               />
             </Suspense>
-            <NewsFeed news={newsData} marketNews={marketNews} loading={loadingNews} stockData={stockData} />
-            <FearGreedIndex value={fearGreedIndex} loading={fearGreedIndex === null}/>
+            {/* 📅 일정 + 💬 월가의 말말말 사이드바 추가 */}
+            <SidebarInfo marketNews={marketNews} />
           </div>
+        </div>
+        
+        {/* 🔥 공포 & 탐욕 지수를 맨 아래 전체 폭으로 배치 */}
+        <div className="w-full">
+          <FearGreedIndex value={fearGreedIndex} loading={fearGreedIndex === null}/>
         </div>
       </main>
     </div>

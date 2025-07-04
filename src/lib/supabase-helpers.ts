@@ -190,31 +190,46 @@ export async function incrementUserStat(userId: string, statName: keyof Pick<Use
   }
 }
 
-// AI 분석 기록 관련 함수들
+// AI 분석 기록 관련 함수들 - 테이블명 변경: ai_analyses -> ai_analysis_history
 export async function getUserAIAnalyses(userId: string, type?: string): Promise<AIAnalysis[]> {
   try {
     let query = supabase
-      .from('ai_analyses')
+      .from('ai_analysis_history')
       .select('*')
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
 
-    if (type && type !== 'all') {
-      query = query.eq('type', type);
+    if (type) {
+      query = query.eq('analysis_type', type);
     }
 
     const { data, error } = await query;
 
     if (error) {
-      // 테이블이 없는 경우는 조용히 빈 배열 반환
-      if (error.message?.includes('relation') || error.message?.includes('does not exist')) {
-        return [];
-      }
+      console.error('Error fetching AI analyses:', error);
       return [];
     }
 
-    return data || [];
+    // 데이터 변환: analysis_content를 올바른 형태로 변환
+    return data.map((item: any) => ({
+      id: item.id,
+      user_id: item.user_id,
+      title: item.title,
+      type: item.analysis_type,
+      symbol: item.symbol,
+      sentiment: item.sentiment,
+      confidence: item.confidence_score || 0,
+      summary: item.analysis_content?.summary || '',
+      key_points: item.analysis_content?.key_points || [],
+      target_price: item.analysis_content?.target_price,
+      current_price: item.price_at_analysis?.toString(),
+      recommendation: item.analysis_content?.recommendation,
+      tags: item.tags || [],
+      created_at: item.created_at,
+      updated_at: item.updated_at,
+    }));
   } catch (error) {
+    console.error('Error in getUserAIAnalyses:', error);
     return [];
   }
 }
@@ -222,10 +237,22 @@ export async function getUserAIAnalyses(userId: string, type?: string): Promise<
 export async function createAIAnalysis(userId: string, analysis: Omit<AIAnalysis, 'id' | 'user_id' | 'created_at' | 'updated_at'>): Promise<AIAnalysis | null> {
   try {
     const { data, error } = await supabase
-      .from('ai_analyses')
+      .from('ai_analysis_history')
       .insert({
         user_id: userId,
-        ...analysis,
+        analysis_type: analysis.type,
+        symbol: analysis.symbol,
+        title: analysis.title,
+        analysis_content: {
+          summary: analysis.summary,
+          key_points: analysis.key_points,
+          target_price: analysis.target_price,
+          recommendation: analysis.recommendation,
+        },
+        sentiment: analysis.sentiment,
+        confidence_score: analysis.confidence,
+        price_at_analysis: analysis.current_price ? parseFloat(analysis.current_price) : null,
+        tags: analysis.tags,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       })
@@ -233,14 +260,32 @@ export async function createAIAnalysis(userId: string, analysis: Omit<AIAnalysis
       .single();
 
     if (error) {
+      console.error('Error creating AI analysis:', error);
       return null;
     }
 
     // 통계 업데이트
     await incrementUserStat(userId, 'ai_analyses_count');
 
-    return data;
+    return {
+      id: data.id,
+      user_id: data.user_id,
+      title: data.title,
+      type: data.analysis_type,
+      symbol: data.symbol,
+      sentiment: data.sentiment,
+      confidence: data.confidence_score || 0,
+      summary: data.analysis_content?.summary || '',
+      key_points: data.analysis_content?.key_points || [],
+      target_price: data.analysis_content?.target_price,
+      current_price: data.price_at_analysis?.toString(),
+      recommendation: data.analysis_content?.recommendation,
+      tags: data.tags || [],
+      created_at: data.created_at,
+      updated_at: data.updated_at,
+    };
   } catch (error) {
+    console.error('Error in createAIAnalysis:', error);
     return null;
   }
 }
@@ -248,17 +293,19 @@ export async function createAIAnalysis(userId: string, analysis: Omit<AIAnalysis
 export async function deleteAIAnalysis(userId: string, analysisId: string): Promise<boolean> {
   try {
     const { error } = await supabase
-      .from('ai_analyses')
+      .from('ai_analysis_history')
       .delete()
       .eq('id', analysisId)
       .eq('user_id', userId);
 
     if (error) {
+      console.error('Error deleting AI analysis:', error);
       return false;
     }
 
     return true;
   } catch (error) {
+    console.error('Error in deleteAIAnalysis:', error);
     return false;
   }
 }
@@ -598,11 +645,25 @@ export async function getUserFavorites(userId: string): Promise<UserFavorite[]> 
       .order('created_at', { ascending: false });
 
     if (error) {
+      console.error('Error fetching user favorites:', error);
       return [];
     }
 
-    return data || [];
+    // 데이터 변환: item_type을 type으로 변환
+    return (data || []).map((item: any) => ({
+      id: item.id,
+      user_id: item.user_id,
+      symbol: item.symbol,
+      name: item.name,
+      market: item.market,
+      type: item.item_type, // item_type -> type 필드명 변환
+      price_alert_enabled: item.price_alert_enabled,
+      target_price: item.target_price,
+      note: item.note,
+      created_at: item.created_at,
+    }));
   } catch (error) {
+    console.error('Error in getUserFavorites:', error);
     return [];
   }
 }
@@ -613,11 +674,18 @@ export async function addUserFavorite(userId: string, favorite: Omit<UserFavorit
       .from('user_favorites')
       .insert({
         user_id: userId,
-        ...favorite,
+        item_type: favorite.type, // type -> item_type 필드명 변경
+        symbol: favorite.symbol,
+        name: favorite.name,
+        market: favorite.market,
+        price_alert_enabled: favorite.price_alert_enabled,
+        target_price: favorite.target_price,
+        note: favorite.note,
         created_at: new Date().toISOString()
       });
 
     if (error) {
+      console.error('Error adding user favorite:', error);
       return false;
     }
 
@@ -626,6 +694,7 @@ export async function addUserFavorite(userId: string, favorite: Omit<UserFavorit
 
     return true;
   } catch (error) {
+    console.error('Error in addUserFavorite:', error);
     return false;
   }
 }

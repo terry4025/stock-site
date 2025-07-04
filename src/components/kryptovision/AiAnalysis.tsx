@@ -33,6 +33,11 @@ interface AiAnalysisProps {
     analysisSummary: string;
     recommendation: string;
     confidenceScore: number;
+    shortTermTarget?: number;
+    longTermTarget?: number;
+    buyPrice?: number;
+    sellPrice?: number;
+    riskLevel?: 'low' | 'medium' | 'high';
   } | null;
   sentiment: {
     sentiment: string;
@@ -274,6 +279,69 @@ export default function AiAnalysis({
           <p className="text-sm font-medium text-muted-foreground">{t('summary')}</p>
           <p className="text-sm text-white">{analysis?.analysisSummary || t('analysis_not_available')}</p>
         </div>
+
+        {/* 투자 가이드 섹션 */}
+        {analysis && (analysis.shortTermTarget || analysis.longTermTarget || analysis.buyPrice || analysis.sellPrice) && (
+          <div className="border-t pt-4 space-y-3">
+            <h4 className="font-semibold text-md text-white flex items-center gap-2">
+              <TrendingUp className="h-4 w-4" />
+              {t('investment_guidance')}
+            </h4>
+            
+            <div className="grid grid-cols-2 gap-3">
+              {analysis.shortTermTarget && (
+                <div className="bg-secondary/50 rounded-lg p-3">
+                  <p className="text-xs text-muted-foreground">{t('short_term_target')}</p>
+                  <p className="text-sm font-bold text-green-400">
+                    ${analysis.shortTermTarget.toLocaleString()}
+                  </p>
+                </div>
+              )}
+              
+              {analysis.longTermTarget && (
+                <div className="bg-secondary/50 rounded-lg p-3">
+                  <p className="text-xs text-muted-foreground">{t('long_term_target')}</p>
+                  <p className="text-sm font-bold text-emerald-400">
+                    ${analysis.longTermTarget.toLocaleString()}
+                  </p>
+                </div>
+              )}
+              
+              {analysis.buyPrice && (
+                <div className="bg-secondary/50 rounded-lg p-3">
+                  <p className="text-xs text-muted-foreground">{t('buy_price')}</p>
+                  <p className="text-sm font-bold text-blue-400">
+                    ${analysis.buyPrice.toLocaleString()}
+                  </p>
+                </div>
+              )}
+              
+              {analysis.sellPrice && (
+                <div className="bg-secondary/50 rounded-lg p-3">
+                  <p className="text-xs text-muted-foreground">{t('sell_price')}</p>
+                  <p className="text-sm font-bold text-orange-400">
+                    ${analysis.sellPrice.toLocaleString()}
+                  </p>
+                </div>
+              )}
+            </div>
+            
+            {analysis.riskLevel && (
+              <div className="flex items-center gap-2">
+                <p className="text-sm text-muted-foreground">{t('risk_level')}:</p>
+                <Badge 
+                  variant={
+                    analysis.riskLevel === 'low' ? 'default' :
+                    analysis.riskLevel === 'high' ? 'destructive' : 'secondary'
+                  }
+                  className="text-xs"
+                >
+                  {t(`risk_${analysis.riskLevel}`)}
+                </Badge>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="border-t pt-4 space-y-2">
            <h4 className="font-semibold text-md text-white">{t('news_sentiment_title')}</h4>

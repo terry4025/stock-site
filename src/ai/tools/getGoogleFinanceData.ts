@@ -86,7 +86,7 @@ export const getGoogleFinanceDataTool = ai.defineTool(
             close: prices.close[i],
             range: [prices.low[i], prices.high[i]] as [number, number],
             volume: prices.volume[i],
-        })).filter(d => d.open !== null && d.high !== null && d.low !== null && d.close !== null);
+        })).filter((d: any) => d.open !== null && d.high !== null && d.low !== null && d.close !== null);
 
         // Make sure we have chart data, otherwise it can break the chart component
         if(chartData.length === 0){

@@ -14,13 +14,29 @@ import {
   Monitor, 
   Zap,
   Save,
-  RefreshCw
+  RefreshCw,
+  Brain,
+  Sparkles,
+  FileText,
+  History,
+  Trash2
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useAuth } from "@/contexts/AuthContext";
 import { getUserSettings, updateUserSettings, UserSettings } from "@/lib/supabase-helpers";
 import { saveSettingsToLocal, loadSettingsFromLocal, getDefaultSettings } from "@/lib/local-settings";
 import { initializeSupabase } from "@/lib/supabase-test";
+import { 
+  getUserSystemPrompt, 
+  saveUserSystemPrompt, 
+  getUserPromptHistory,
+  deleteUserSystemPrompt,
+  activateSystemPrompt,
+  DEFAULT_SYSTEM_PROMPT,
+  SYSTEM_PROMPT_TEMPLATES
+} from "@/lib/system-prompts";
+import { Textarea } from "@/components/ui/textarea";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface SettingsModalProps {
   open: boolean;
@@ -32,6 +48,13 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [settingsLoading, setSettingsLoading] = useState(true);
+  
+  // AI 시스템 프롬프트 상태
+  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT);
+  const [promptName, setPromptName] = useState('');
+  const [promptHistory, setPromptHistory] = useState<any[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState('custom');
+  const [savingPrompt, setSavingPrompt] = useState(false);
   
   const [settings, setSettings] = useState({
     // 대시보드 설정
@@ -123,6 +146,29 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
     };
 
     loadSettings();
+  }, [user?.id, open]);
+
+  // 시스템 프롬프트 로드
+  useEffect(() => {
+    const loadPrompts = async () => {
+      if (!user?.id || !open) return;
+      
+      try {
+        // 현재 활성 프롬프트 로드
+        const { prompt, isCustom } = await getUserSystemPrompt(user.id);
+        setSystemPrompt(prompt);
+        
+        // 프롬프트 히스토리 로드
+        const history = await getUserPromptHistory(user.id);
+        setPromptHistory(history);
+        
+        console.log('🤖 [SettingsModal] System prompts loaded');
+      } catch (error) {
+        console.error('❌ [SettingsModal] Error loading prompts:', error);
+      }
+    };
+
+    loadPrompts();
   }, [user?.id, open]);
 
   const handleToggle = (key: string, value: boolean) => {
@@ -276,7 +322,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
         </DialogHeader>
 
         <Tabs defaultValue="dashboard" className="w-full">
-          <TabsList className="grid w-full grid-cols-3 bg-slate-800/50">
+          <TabsList className="grid w-full grid-cols-4 bg-slate-800/50">
             <TabsTrigger value="dashboard" className="data-[state=active]:bg-purple-600">
               <Monitor className="w-4 h-4 mr-2" />
               대시보드
@@ -288,6 +334,10 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
             <TabsTrigger value="advanced" className="data-[state=active]:bg-purple-600">
               <Settings className="w-4 h-4 mr-2" />
               고급
+            </TabsTrigger>
+            <TabsTrigger value="ai-prompt" className="data-[state=active]:bg-purple-600">
+              <Brain className="w-4 h-4 mr-2" />
+              AI 프롬프트
             </TabsTrigger>
           </TabsList>
 
@@ -443,6 +493,194 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                     onCheckedChange={(checked) => handleToggle("auto_refresh", checked)}
                   />
                 </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="ai-prompt" className="space-y-4 mt-6">
+            <Card className="bg-slate-800/30 border-slate-700">
+              <CardHeader>
+                <CardTitle className="text-lg text-slate-100 flex items-center gap-2">
+                  <Sparkles className="w-5 h-5 text-yellow-400" />
+                  AI 시스템 프롬프트
+                </CardTitle>
+                <CardDescription className="text-slate-400">
+                  AI 분석의 성격과 스타일을 설정하세요. 투자 전략가의 페르소나를 정의합니다.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* 템플릿 선택 */}
+                <div className="space-y-2">
+                  <Label className="text-slate-200">템플릿 선택</Label>
+                  <Select value={selectedTemplate} onValueChange={(value) => {
+                    setSelectedTemplate(value);
+                    if (value === 'default') {
+                      setSystemPrompt(DEFAULT_SYSTEM_PROMPT);
+                    } else if (value in SYSTEM_PROMPT_TEMPLATES) {
+                      const template = SYSTEM_PROMPT_TEMPLATES[value as keyof typeof SYSTEM_PROMPT_TEMPLATES];
+                      setSystemPrompt(template.prompt);
+                    }
+                  }}>
+                    <SelectTrigger className="bg-slate-700/50 border-slate-600">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-800 border-slate-700">
+                      <SelectItem value="custom">사용자 정의</SelectItem>
+                      <SelectItem value="default">기본 프롬프트</SelectItem>
+                      <SelectItem value="aggressive">공격적 투자자</SelectItem>
+                      <SelectItem value="conservative">보수적 투자자</SelectItem>
+                      <SelectItem value="balanced">균형 투자자</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* 프롬프트 이름 */}
+                <div className="space-y-2">
+                  <Label className="text-slate-200">프롬프트 이름 (선택사항)</Label>
+                  <input
+                    type="text"
+                    value={promptName}
+                    onChange={(e) => setPromptName(e.target.value)}
+                    placeholder="예: 성장주 전문가, 가치투자 분석가..."
+                    className="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-md text-slate-200 placeholder-slate-500"
+                  />
+                </div>
+
+                {/* 프롬프트 편집기 */}
+                <div className="space-y-2">
+                  <Label className="text-slate-200">시스템 프롬프트</Label>
+                  <Textarea
+                    value={systemPrompt}
+                    onChange={(e) => setSystemPrompt(e.target.value)}
+                    placeholder="AI의 성격과 분석 스타일을 정의하세요..."
+                    className="min-h-[300px] bg-slate-700/50 border-slate-600 text-slate-200 placeholder-slate-500"
+                  />
+                  <p className="text-xs text-slate-500">
+                    {systemPrompt.length} / 10000 자
+                  </p>
+                </div>
+
+                {/* 저장 버튼 */}
+                <div className="flex justify-end">
+                  <Button
+                    onClick={async () => {
+                      if (!user?.id) {
+                        setMessage('로그인이 필요합니다.');
+                        return;
+                      }
+                      
+                      setSavingPrompt(true);
+                      try {
+                        const result = await saveUserSystemPrompt(
+                          user.id, 
+                          systemPrompt, 
+                          promptName || 'Custom Prompt'
+                        );
+                        
+                        if (result.success) {
+                          setMessage('AI 프롬프트가 저장되었습니다.');
+                          // 히스토리 새로고침
+                          const history = await getUserPromptHistory(user.id);
+                          setPromptHistory(history);
+                        } else {
+                          setMessage('프롬프트 저장에 실패했습니다.');
+                        }
+                      } catch (error) {
+                        console.error('프롬프트 저장 오류:', error);
+                        setMessage('프롬프트 저장 중 오류가 발생했습니다.');
+                      } finally {
+                        setSavingPrompt(false);
+                      }
+                    }}
+                    disabled={savingPrompt || !systemPrompt}
+                    className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700"
+                  >
+                    {savingPrompt ? (
+                      <div className="flex items-center space-x-2">
+                        <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        <span>저장 중...</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center space-x-2">
+                        <FileText className="w-4 h-4" />
+                        <span>프롬프트 저장</span>
+                      </div>
+                    )}
+                  </Button>
+                </div>
+
+                {/* 프롬프트 히스토리 */}
+                {promptHistory.length > 0 && (
+                  <div className="space-y-2">
+                    <Label className="text-slate-200 flex items-center gap-2">
+                      <History className="w-4 h-4" />
+                      저장된 프롬프트
+                    </Label>
+                    <ScrollArea className="h-[200px] w-full rounded-md border border-slate-700 p-4">
+                      <div className="space-y-2">
+                        {promptHistory.map((item) => (
+                          <div 
+                            key={item.id} 
+                            className={`p-3 rounded-lg bg-slate-800/50 border ${
+                              item.is_active ? 'border-purple-500' : 'border-slate-700'
+                            }`}
+                          >
+                            <div className="flex justify-between items-start">
+                              <div className="flex-1">
+                                <h4 className="text-sm font-medium text-slate-200">
+                                  {item.name}
+                                  {item.is_active && (
+                                    <span className="ml-2 text-xs text-purple-400">(활성)</span>
+                                  )}
+                                </h4>
+                                <p className="text-xs text-slate-500 mt-1">
+                                  {new Date(item.created_at).toLocaleDateString('ko-KR')}
+                                </p>
+                              </div>
+                              <div className="flex gap-1">
+                                {!item.is_active && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={async () => {
+                                      const result = await activateSystemPrompt(user!.id, item.id);
+                                      if (result.success) {
+                                        setMessage('프롬프트가 활성화되었습니다.');
+                                        const history = await getUserPromptHistory(user!.id);
+                                        setPromptHistory(history);
+                                        setSystemPrompt(item.prompt);
+                                      }
+                                    }}
+                                    className="text-green-400 hover:text-green-300"
+                                  >
+                                    활성화
+                                  </Button>
+                                )}
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={async () => {
+                                    if (confirm('이 프롬프트를 삭제하시겠습니까?')) {
+                                      const result = await deleteUserSystemPrompt(user!.id, item.id);
+                                      if (result.success) {
+                                        setMessage('프롬프트가 삭제되었습니다.');
+                                        const history = await getUserPromptHistory(user!.id);
+                                        setPromptHistory(history);
+                                      }
+                                    }
+                                  }}
+                                  className="text-red-400 hover:text-red-300"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>

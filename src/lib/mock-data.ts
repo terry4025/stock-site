@@ -1,15 +1,159 @@
 import { StockData, NewsArticle, MarketIndicator } from './types';
 
 export const mockAutocomplete = [
+  // 🔥 주요 테크 기업들
   { symbol: 'AAPL', name: 'Apple Inc.' },
-  { symbol: 'GOOGL', name: 'Alphabet Inc.' },
+  { symbol: 'GOOGL', name: 'Alphabet Inc. (Class A)' },
+  { symbol: 'GOOG', name: 'Alphabet Inc. (Class C)' },
   { symbol: 'MSFT', name: 'Microsoft Corporation' },
+  { symbol: 'AMZN', name: 'Amazon.com, Inc.' },
   { symbol: 'TSLA', name: 'Tesla, Inc.' },
   { symbol: 'TSLL', name: 'Leverage Shares 2x Tesla ETP' },
-  { symbol: 'AMZN', name: 'Amazon.com, Inc.' },
+  { symbol: 'META', name: 'Meta Platforms, Inc.' },
   { symbol: 'NVDA', name: 'NVIDIA Corporation' },
-  { symbol: '005930.KS', name: 'Samsung Electronics Co., Ltd.' },
-  { symbol: '000660.KS', name: 'SK Hynix Inc.' },
+  { symbol: 'NFLX', name: 'Netflix, Inc.' },
+  
+  // 🎯 반도체 & CPU/GPU 기업들  
+  { symbol: 'AMD', name: 'Advanced Micro Devices, Inc.' },
+  { symbol: 'INTC', name: 'Intel Corporation' },
+  { symbol: 'QCOM', name: 'QUALCOMM Incorporated' },
+  { symbol: 'AVGO', name: 'Broadcom Inc.' },
+  { symbol: 'TXN', name: 'Texas Instruments Incorporated' },
+  { symbol: 'ADI', name: 'Analog Devices, Inc.' },
+  { symbol: 'MRVL', name: 'Marvell Technology, Inc.' },
+  { symbol: 'XLNX', name: 'Xilinx, Inc.' },
+  { symbol: 'MU', name: 'Micron Technology, Inc.' },
+  
+  // 💰 금융 & 은행
+  { symbol: 'JPM', name: 'JPMorgan Chase & Co.' },
+  { symbol: 'BAC', name: 'Bank of America Corporation' },
+  { symbol: 'WFC', name: 'Wells Fargo & Company' },
+  { symbol: 'C', name: 'Citigroup Inc.' },
+  { symbol: 'GS', name: 'The Goldman Sachs Group, Inc.' },
+  { symbol: 'MS', name: 'Morgan Stanley' },
+  { symbol: 'V', name: 'Visa Inc.' },
+  { symbol: 'MA', name: 'Mastercard Incorporated' },
+  { symbol: 'PYPL', name: 'PayPal Holdings, Inc.' },
+  
+  // 🏥 헬스케어 & 제약
+  { symbol: 'JNJ', name: 'Johnson & Johnson' },
+  { symbol: 'PFE', name: 'Pfizer Inc.' },
+  { symbol: 'UNH', name: 'UnitedHealth Group Incorporated' },
+  { symbol: 'MRNA', name: 'Moderna, Inc.' },
+  { symbol: 'BNTX', name: 'BioNTech SE' },
+  { symbol: 'ABBV', name: 'AbbVie Inc.' },
+  { symbol: 'TMO', name: 'Thermo Fisher Scientific Inc.' },
+  { symbol: 'DHR', name: 'Danaher Corporation' },
+  
+  // ⚡ 에너지 & 유틸리티
+  { symbol: 'XOM', name: 'Exxon Mobil Corporation' },
+  { symbol: 'CVX', name: 'Chevron Corporation' },
+  { symbol: 'COP', name: 'ConocoPhillips' },
+  { symbol: 'SLB', name: 'Schlumberger Limited' },
+  { symbol: 'OXY', name: 'Occidental Petroleum Corporation' },
+  
+  // 🏭 소비재 & 리테일
+  { symbol: 'WMT', name: 'Walmart Inc.' },
+  { symbol: 'HD', name: 'The Home Depot, Inc.' },
+  { symbol: 'PG', name: 'The Procter & Gamble Company' },
+  { symbol: 'KO', name: 'The Coca-Cola Company' },
+  { symbol: 'PEP', name: 'PepsiCo, Inc.' },
+  { symbol: 'NKE', name: 'NIKE, Inc.' },
+  { symbol: 'DIS', name: 'The Walt Disney Company' },
+  { symbol: 'MCD', name: 'McDonald\'s Corporation' },
+  { symbol: 'SBUX', name: 'Starbucks Corporation' },
+  
+  // 🚗 자동차 & 교통
+  { symbol: 'F', name: 'Ford Motor Company' },
+  { symbol: 'GM', name: 'General Motors Company' },
+  { symbol: 'RIVN', name: 'Rivian Automotive, Inc.' },
+  { symbol: 'LCID', name: 'Lucid Group, Inc.' },
+  { symbol: 'NIO', name: 'NIO Inc.' },
+  { symbol: 'XPEV', name: 'XPeng Inc.' },
+  { symbol: 'LI', name: 'Li Auto Inc.' },
+  
+  // 🏠 부동산 & 리츠
+  { symbol: 'AMT', name: 'American Tower Corporation' },
+  { symbol: 'PLD', name: 'Prologis, Inc.' },
+  { symbol: 'CCI', name: 'Crown Castle Inc.' },
+  { symbol: 'EQIX', name: 'Equinix, Inc.' },
+  
+  // 📱 통신 & 미디어
+  { symbol: 'T', name: 'AT&T Inc.' },
+  { symbol: 'VZ', name: 'Verizon Communications Inc.' },
+  { symbol: 'TMUS', name: 'T-Mobile US, Inc.' },
+  { symbol: 'CMCSA', name: 'Comcast Corporation' },
+  
+  // 🎮 게임 & 엔터테인먼트
+  { symbol: 'ATVI', name: 'Activision Blizzard, Inc.' },
+  { symbol: 'EA', name: 'Electronic Arts Inc.' },
+  { symbol: 'TTWO', name: 'Take-Two Interactive Software, Inc.' },
+  { symbol: 'RBLX', name: 'Roblox Corporation' },
+  { symbol: 'U', name: 'Unity Software Inc.' },
+  
+  // ☁️ 클라우드 & SaaS
+  { symbol: 'CRM', name: 'salesforce.com, inc.' },
+  { symbol: 'NOW', name: 'ServiceNow, Inc.' },
+  { symbol: 'SNOW', name: 'Snowflake Inc.' },
+  { symbol: 'PLTR', name: 'Palantir Technologies Inc.' },
+  { symbol: 'CRWD', name: 'CrowdStrike Holdings, Inc.' },
+  { symbol: 'ZM', name: 'Zoom Video Communications, Inc.' },
+  { symbol: 'WORK', name: 'Slack Technologies, Inc.' },
+  
+  // 🚀 우주 & 항공
+  { symbol: 'BA', name: 'The Boeing Company' },
+  { symbol: 'LMT', name: 'Lockheed Martin Corporation' },
+  { symbol: 'RTX', name: 'Raytheon Technologies Corporation' },
+  { symbol: 'NOC', name: 'Northrop Grumman Corporation' },
+  
+  // 🏦 핀테크 & 암호화폐 관련
+  { symbol: 'SQ', name: 'Block, Inc.' },
+  { symbol: 'COIN', name: 'Coinbase Global, Inc.' },
+  { symbol: 'MSTR', name: 'MicroStrategy Incorporated' },
+  { symbol: 'HOOD', name: 'Robinhood Markets, Inc.' },
+  
+  // 🧬 바이오테크 & 첨단기술
+  { symbol: 'GILD', name: 'Gilead Sciences, Inc.' },
+  { symbol: 'AMGN', name: 'Amgen Inc.' },
+  { symbol: 'BIIB', name: 'Biogen Inc.' },
+  { symbol: 'REGN', name: 'Regeneron Pharmaceuticals, Inc.' },
+  
+  // 🛒 전자상거래 & 배송
+  { symbol: 'SHOP', name: 'Shopify Inc.' },
+  { symbol: 'EBAY', name: 'eBay Inc.' },
+  { symbol: 'ETSY', name: 'Etsy, Inc.' },
+  { symbol: 'BABA', name: 'Alibaba Group Holding Limited' },
+  { symbol: 'JD', name: 'JD.com, Inc.' },
+  { symbol: 'PDD', name: 'PDD Holdings Inc.' },
+  
+  // 🏗️ 산업재 & 건설
+  { symbol: 'CAT', name: 'Caterpillar Inc.' },
+  { symbol: 'DE', name: 'Deere & Company' },
+  { symbol: 'MMM', name: '3M Company' },
+  { symbol: 'HON', name: 'Honeywell International Inc.' },
+  { symbol: 'GE', name: 'General Electric Company' },
+  
+  // 🇰🇷 한국 주요 종목들 (확장)
+  { symbol: '005930.KS', name: '삼성전자 (Samsung Electronics)' },
+  { symbol: '000660.KS', name: 'SK하이닉스 (SK Hynix)' },
+  { symbol: '035420.KS', name: '네이버 (NAVER)' },
+  { symbol: '035720.KS', name: '카카오 (Kakao)' },
+  { symbol: '207940.KS', name: '삼성바이오로직스 (Samsung Biologics)' },
+  { symbol: '006400.KS', name: '삼성SDI (Samsung SDI)' },
+  { symbol: '051910.KS', name: 'LG화학 (LG Chem)' },
+  { symbol: '003670.KS', name: '포스코홀딩스 (POSCO Holdings)' },
+  { symbol: '096770.KS', name: 'SK이노베이션 (SK Innovation)' },
+  { symbol: '017670.KS', name: 'SK텔레콤 (SK Telecom)' },
+  { symbol: '030200.KS', name: 'KT (KT Corporation)' },
+  { symbol: '055550.KS', name: '신한지주 (Shinhan Financial Group)' },
+  { symbol: '105560.KS', name: 'KB금융 (KB Financial Group)' },
+  { symbol: '086790.KS', name: '하나금융지주 (Hana Financial Group)' },
+  { symbol: '012330.KS', name: '현대모비스 (Hyundai Mobis)' },
+  { symbol: '005380.KS', name: '현대차 (Hyundai Motor)' },
+  { symbol: '000270.KS', name: '기아 (Kia Corporation)' },
+  { symbol: '068270.KS', name: '셀트리온 (Celltrion)' },
+  { symbol: '028260.KS', name: '삼성물산 (Samsung C&T)' },
+  { symbol: '018260.KS', name: '삼성에스디에스 (Samsung SDS)' },
 ];
 
 export const mockStockData: Record<string, StockData> = {

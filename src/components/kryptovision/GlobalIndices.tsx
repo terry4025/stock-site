@@ -36,7 +36,7 @@ export default function GlobalIndices({ className }: GlobalIndicesProps) {
       
       // 데이터 검증 및 폴백 처리
       if (data && data.length > 0) {
-        const hasValidData = data.some(item => item.price > 0);
+        const hasValidData = data.some((item: any) => item.price > 0);
         if (hasValidData) {
           const indicesData: IndexData[] = data.map((item: any) => ({
             symbol: item.symbol,
