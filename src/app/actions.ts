@@ -7298,90 +7298,140 @@ function extractGitBookHeadlines(html: string, baseUrl: string): NewsArticle[] {
     try {
         console.log('[GitBook] 🔍 사이드바 헤드라인 뉴스 추출 시작...');
         
-        // 여러 패턴으로 헤드라인 링크들 추출
-        const linkPatterns = [
-            // 패턴 1: 기본 li > a > span 구조
-            /<li[^>]*>\s*<a[^>]*href\s*=\s*['"']([^"']*)['"'][^>]*>\s*<span[^>]*>([\s\S]*?)<\/span>/gi,
+        // 사용자가 제공한 구조에 맞는 패턴: <span class="">뉴스 제목 (원문)</span>
+        const specificPatterns = [
+            // 패턴 1: span 태그 안의 뉴스 헤드라인 (더 관대한 패턴)
+            /<span[^>]*>([^<]*(?:미국|중국|트럼프|연준|금리|증시|주식|경제|반도체|설계|소프트웨어|규제|해제)[^<]*(?:\([^)]*원문[^)]*\))?[^<]*)<\/span>/gi,
             
-            // 패턴 2: li > a 구조 (span 없음)
-            /<li[^>]*>\s*<a[^>]*href\s*=\s*['"']([^"']*)['"'][^>]*>([^<]*?)<\/a>/gi,
+            // 패턴 2: li 태그 안의 모든 텍스트 (더 포괄적)
+            /<li[^>]*>([^<]*(?:미국|중국|트럼프|연준|금리|증시|주식|경제|반도체|설계|소프트웨어|규제|해제)[^<]*)<\/li>/gi,
             
-            // 패턴 3: 단순 a 태그
-            /<a[^>]*href\s*=\s*['"']([^"']*)['"'][^>]*>\s*<span[^>]*>([\s\S]*?)<\/span>/gi,
+            // 패턴 3: 링크가 있는 경우 (향상된 패턴)
+            /<a[^>]*href\s*=\s*['"']([^"']*)['"'][^>]*>\s*(?:<span[^>]*>)?([^<]*(?:미국|중국|트럼프|연준|금리|증시|주식|경제|반도체|설계|소프트웨어|규제|해제)[^<]*)(?:<\/span>)?/gi,
             
-            // 패턴 4: div나 p 안의 링크
-            /<(?:div|p)[^>]*>\s*<a[^>]*href\s*=\s*['"']([^"']*)['"'][^>]*>([^<]*?)<\/a>/gi
+            // 패턴 4: div나 p 태그 안의 텍스트
+            /<(?:div|p)[^>]*>([^<]*(?:미국|중국|트럼프|연준|금리|증시|주식|경제|반도체|설계|소프트웨어|규제|해제)[^<]*)<\/(?:div|p)>/gi,
+            
+            // 패턴 5: 텍스트 노드에서 직접 추출 (class가 없는 span)
+            /<span\s*>([^<]*(?:미국|중국|트럼프|연준|금리|증시|주식|경제|반도체|설계|소프트웨어|규제|해제)[^<]*)<\/span>/gi
         ];
         
-        console.log('[GitBook] 🔍 다중 패턴으로 헤드라인 링크 검색 중...');
+        console.log('[GitBook] 🔍 사이드바 특화 패턴으로 헤드라인 검색 중...');
         
-        for (const pattern of linkPatterns) {
+        for (let i = 0; i < specificPatterns.length; i++) {
+            const pattern = specificPatterns[i];
             let match;
+            let patternMatches = 0;
+            
+            console.log(`[GitBook] 🔍 패턴 ${i + 1} 검색 중...`);
+            
             while ((match = pattern.exec(html)) !== null) {
-                const href = match[1];
-                let title = match[2];
+                let title, href = '#';
+                
+                if (match.length === 3) {
+                    // 링크가 있는 경우 (패턴 3)
+                    href = match[1];
+                    title = match[2];
+                } else {
+                    // 링크가 없는 경우 (패턴 1, 2, 4, 5)
+                    title = match[1];
+                }
                 
                 // HTML 태그 제거 및 텍스트 정리
                 title = title.replace(/<[^>]+>/g, '').trim();
                 title = decodeHtmlEntities(title);
                 
+                // 디버깅을 위해 매치된 내용 출력
+                console.log(`[GitBook] 🔍 패턴 ${i + 1} 매치: "${title.substring(0, 100)}${title.length > 100 ? '...' : ''}"`);
+                
                 // 유효한 헤드라인인지 검증
                 if (isValidHeadlineTitle(title, href)) {
                     // URL 정규화
-                    const finalUrl = normalizeUrl(href, baseUrl);
+                    const finalUrl = href !== '#' ? normalizeUrl(href, baseUrl) : baseUrl;
                     
-                    articles.push({
-                        title: title,
-                        url: finalUrl,
-                        publishedAt: new Date().toISOString(),
-                        source: '오선 (Osen)',
-                        language: 'kr',
-                        summary: title, // 헤드라인은 제목을 요약으로 사용
-                        content: title, // 헤드라인은 제목을 내용으로 사용
-                        category: 'headline', // 헤드라인임을 표시
-                        isGeminiGenerated: false
-                    });
+                    // 중복 체크
+                    const isDuplicate = articles.some(article => article.title === title);
+                    if (!isDuplicate) {
+                        articles.push({
+                            title: title,
+                            url: finalUrl,
+                            publishedAt: new Date().toISOString(),
+                            source: '오선 (Osen)',
+                            language: 'kr',
+                            summary: title, // 헤드라인은 제목을 요약으로 사용
+                            content: `${title}\n\n이 헤드라인은 오선 GitBook의 사이드바에서 추출된 최신 뉴스입니다.`, 
+                            category: 'headline', // 헤드라인임을 표시
+                            isGeminiGenerated: false
+                        });
+                        
+                        patternMatches++;
+                        console.log(`[GitBook] ✅ 패턴 ${i + 1} 헤드라인 추가: "${title.substring(0, 50)}..."`);
+                    } else {
+                        console.log(`[GitBook] ⚠️ 중복 헤드라인 스킵: "${title.substring(0, 50)}..."`);
+                    }
+                } else {
+                    console.log(`[GitBook] ❌ 패턴 ${i + 1} 유효하지 않은 헤드라인: "${title.substring(0, 50)}..."`);
                 }
             }
+            
+            console.log(`[GitBook] 📊 패턴 ${i + 1} 완료: ${patternMatches}개 매치`);
         }
         
-        // 추가 패턴: 뉴스 관련 키워드가 포함된 영역에서 링크 추출
-        const newsKeywords = ['뉴스', 'news', '헤드라인', 'headlines', '주요', 'top'];
-        for (const keyword of newsKeywords) {
-            const newsPattern = new RegExp(`[^>]*${keyword}[^<]*<[\\s\\S]*?(?=<\\/(?:div|section|nav|aside))`, 'gi');
-            const newsMatch = html.match(newsPattern);
+        // 추가 패턴: HTML에서 뉴스 키워드가 포함된 모든 텍스트 추출
+        try {
+            console.log('[GitBook] 🔍 전체 HTML에서 뉴스 텍스트 검색 중...');
             
-            if (newsMatch) {
-                for (const section of newsMatch) {
-                    const simpleLinks = section.match(/<a[^>]*href\s*=\s*['"']([^"']*)['"'][^>]*>([^<]*?)<\/a>/gi);
-                    if (simpleLinks) {
-                        for (const link of simpleLinks) {
-                            const linkMatch = link.match(/<a[^>]*href\s*=\s*['"']([^"']*)['"'][^>]*>([^<]*?)<\/a>/i);
-                            if (linkMatch) {
-                                const href = linkMatch[1];
-                                let title = linkMatch[2].trim();
-                                title = decodeHtmlEntities(title);
-                                
-                                if (isValidHeadlineTitle(title, href)) {
-                                    const finalUrl = normalizeUrl(href, baseUrl);
-                                    
-                                    articles.push({
-                                        title: title,
-                                        url: finalUrl,
-                                        publishedAt: new Date().toISOString(),
-                                        source: '오선 (Osen)',
-                                        language: 'kr',
-                                        summary: title,
-                                        content: title,
-                                        category: 'headline',
-                                        isGeminiGenerated: false
-                                    });
-                                }
-                            }
-                        }
+            // HTML에서 모든 텍스트 노드 추출 (태그 제거)
+            const plainText = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '') // 스크립트 제거
+                                  .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '') // 스타일 제거
+                                  .replace(/<[^>]+>/g, ' ') // 모든 HTML 태그 제거
+                                  .replace(/\s+/g, ' ') // 연속 공백 제거
+                                  .trim();
+            
+            // 뉴스 키워드가 포함된 문장들 찾기
+            const newsKeywords = ['미국', '중국', '트럼프', '연준', '금리', '증시', '주식', '경제', '반도체', '설계', '소프트웨어', '규제', '해제'];
+            const sentences = plainText.split(/[.!?;]/).filter(sentence => sentence.trim().length > 0);
+            
+            console.log(`[GitBook] 📝 전체 텍스트에서 ${sentences.length}개 문장 분석 중...`);
+            
+            for (const sentence of sentences) {
+                const trimmedSentence = sentence.trim();
+                
+                // 뉴스 키워드가 포함되어 있고 적절한 길이인지 확인
+                const hasNewsKeyword = newsKeywords.some(keyword => trimmedSentence.includes(keyword));
+                
+                if (hasNewsKeyword && trimmedSentence.length > 15 && trimmedSentence.length < 150) {
+                    const title = decodeHtmlEntities(trimmedSentence);
+                    
+                    // 중복 체크
+                    const isDuplicate = articles.some(article => 
+                        article.title === title || 
+                        article.title.includes(title.substring(0, 30)) ||
+                        title.includes(article.title.substring(0, 30))
+                    );
+                    
+                    if (!isDuplicate && isValidHeadlineTitle(title, '#')) {
+                        articles.push({
+                            title: title,
+                            url: baseUrl,
+                            publishedAt: new Date().toISOString(),
+                            source: '오선 (Osen)',
+                            language: 'kr',
+                            summary: title,
+                            content: `${title}\n\n이 헤드라인은 오선 GitBook에서 추출된 최신 뉴스입니다.`,
+                            category: 'headline',
+                            isGeminiGenerated: false
+                        });
+                        
+                        console.log(`[GitBook] ✅ 텍스트 분석에서 뉴스 발견: "${title.substring(0, 50)}..."`);
                     }
                 }
             }
+            
+            console.log(`[GitBook] 📊 텍스트 분석 완료: ${articles.length}개 총 헤드라인`);
+            
+        } catch (textError) {
+            console.warn('[GitBook] 텍스트 분석 중 오류:', textError);
         }
         
         // 중복 제거
@@ -7481,7 +7531,7 @@ async function extractWallStreetDetailsFromSidebar(html: string, baseUrl: string
                     headers: {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                     },
-                    signal: AbortSignal.timeout(10000)
+                    signal: AbortSignal.timeout(5000) // 5초로 단축
                 });
                 
                 if (detailResponse.ok) {
@@ -7567,7 +7617,7 @@ export async function getGitBookLatestNews(language: string): Promise<NewsArticl
             console.log(`[GitBook] HEAD 요청 실패, 바로 GET 요청으로 진행:`, headError);
         }
         
-        // 3. 실제 콘텐츠 크롤링 (타임아웃 15초로 증가)
+        // 3. 실제 콘텐츠 크롤링 (타임아웃 8초로 조정)
         const response = await fetch(targetUrl, { 
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -7576,7 +7626,7 @@ export async function getGitBookLatestNews(language: string): Promise<NewsArticl
                 'Cache-Control': 'no-cache',
                 'Connection': 'keep-alive'
             },
-            signal: AbortSignal.timeout(15000) // 15초로 증가
+            signal: AbortSignal.timeout(8000) // 8초로 조정
         });
         
         if (!response.ok) {
