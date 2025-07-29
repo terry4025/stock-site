@@ -1166,8 +1166,8 @@ Summary:`;
 export async function getGeminiWithGoogleSearch(query: string, language: string): Promise<{ response: string; searchUsed: boolean; error?: string; }> {
     console.log(`[Gemini + Google Search] Processing query: "${query.substring(0, 50)}..."`);
 
-    // 🔑 Gemini API 키
-    const geminiApiKey = 'AIzaSyBeiOwYWGupnzAXMO3t6pdVyYHFptd16Og';
+    // 🔑 Gemini API 키 (Google Search grounding 지원)
+    const geminiApiKey = process.env.GOOGLE_API_KEY || 'AIzaSyBeiOwYWGupnzAXMO3t6pdVyYHFptd16Og';
 
     const prompt = language === 'kr'
         ? `다음 질문에 대해 최신 정보를 검색하여 한국어로 답변해주세요. 필요하면 Google 검색을 통해 실시간 정보를 찾아주세요:
@@ -1223,13 +1223,13 @@ Answer:`;
                             threshold: "BLOCK_MEDIUM_AND_ABOVE"
                         }
                     ],
-                    // 🔍 Google Search grounding (실시간 검색)
+                    // 🔍 Google Search grounding (실시간 검색) - 2025 최신 방식
                     tools: [
                         {
                             googleSearchRetrieval: {
                                 dynamicRetrievalConfig: {
                                     mode: "MODE_DYNAMIC",
-                                    dynamicThreshold: 0.7
+                                    dynamicThreshold: 0.3 // 낮은 임계값으로 더 자주 검색 사용
                                 }
                             }
                         }
