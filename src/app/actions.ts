@@ -1167,7 +1167,7 @@ export async function getGeminiWithGoogleSearch(query: string, language: string)
     console.log(`[Gemini + Google Search] Processing query: "${query.substring(0, 50)}..."`);
 
     // 🔑 Gemini API 키 (Google Search grounding 지원)
-    const geminiApiKey = process.env.GOOGLE_API_KEY || 'AIzaSyBeiOwYWGupnzAXMO3t6pdVyYHFptd16Og';
+    const geminiApiKey = process.env.GOOGLE_API_KEY || 'AIzaSyBDdnhEfwUjqRt7YEDiHk88PhbvgfZ_xP8';
 
     const prompt = language === 'kr'
         ? `다음 질문에 대해 최신 정보를 검색하여 한국어로 답변해주세요. 필요하면 Google 검색을 통해 실시간 정보를 찾아주세요:
