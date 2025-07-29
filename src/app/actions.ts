@@ -2955,17 +2955,19 @@ export async function getStockSpecificNews(ticker: string, language: string): Pr
         // 🔥 다중 뉴스 소스에서 데이터 수집 및 중복 제거
         const allNewsResults: NewsArticle[] = [...geminiNews, ...gitBookNews]; // 제미나이와 GitBook 뉴스를 맨 앞에
 
-        // 🚀 강화된 RSS 기반 뉴스 시스템 - 더 많은 최신 뉴스 수집
+        // 🚀 대대적으로 강화된 RSS 기반 뉴스 시스템 - 5개 소스로 확장!
         const stockNewsSources = isInternationalQuery ? [
-            { name: 'Enhanced Yahoo Finance RSS', fn: () => getYahooFinanceNews(ticker, language), timeout: 6000, priority: 1 },
-            { name: 'Enhanced Financial RSS (MarketWatch/Seeking Alpha)', fn: () => getAlphaVantageNews(ticker, language), timeout: 5000, priority: 2 },
-            { name: 'Enhanced Multi-RSS (BBC/Reuters/CNN)', fn: () => getPublicNewsAPI(smartQuery, language), timeout: 5000, priority: 3 },
-            { name: 'BBC Business RSS', fn: () => getSimpleRSSNews(smartQuery, language), timeout: 4000, priority: 4 },
+            { name: 'Enhanced Yahoo Finance RSS (20개)', fn: () => getYahooFinanceNews(ticker, language), timeout: 7000, priority: 1 },
+            { name: 'Enhanced Financial RSS (12개 소스/48개)', fn: () => getAlphaVantageNews(ticker, language), timeout: 6000, priority: 2 },
+            { name: 'Enhanced Multi-RSS (10개 소스/30개)', fn: () => getPublicNewsAPI(smartQuery, language), timeout: 6000, priority: 3 },
+            { name: 'Tech Specialized RSS (10개 소스/25개)', fn: () => getTechSpecializedNews(smartQuery, language), timeout: 6000, priority: 4 },
+            { name: 'BBC Business RSS (15개)', fn: () => getSimpleRSSNews(smartQuery, language), timeout: 5000, priority: 5 },
         ] : [
-            { name: 'Enhanced Yahoo Finance Korea RSS', fn: () => getYahooFinanceNews(ticker, language), timeout: 6000, priority: 1 },
-            { name: 'Enhanced Multi-RSS (BBC/Reuters/CNN)', fn: () => getPublicNewsAPI(smartQuery, language), timeout: 5000, priority: 2 },
-            { name: 'Enhanced Financial RSS (MarketWatch/Seeking Alpha)', fn: () => getAlphaVantageNews(ticker, language), timeout: 5000, priority: 3 },
-            { name: 'BBC Business RSS', fn: () => getSimpleRSSNews(smartQuery, language), timeout: 4000, priority: 4 },
+            { name: 'Enhanced Yahoo Finance Korea RSS (20개)', fn: () => getYahooFinanceNews(ticker, language), timeout: 7000, priority: 1 },
+            { name: 'Enhanced Multi-RSS (10개 소스/30개)', fn: () => getPublicNewsAPI(smartQuery, language), timeout: 6000, priority: 2 },
+            { name: 'Enhanced Financial RSS (12개 소스/48개)', fn: () => getAlphaVantageNews(ticker, language), timeout: 6000, priority: 3 },
+            { name: 'Tech Specialized RSS (10개 소스/25개)', fn: () => getTechSpecializedNews(smartQuery, language), timeout: 6000, priority: 4 },
+            { name: 'BBC Business RSS (15개)', fn: () => getSimpleRSSNews(smartQuery, language), timeout: 5000, priority: 5 },
         ];
 
         // 🎯 제미나이 뉴스가 충분하면 외부 소스 호출 최소화
@@ -6724,7 +6726,7 @@ async function getAlphaVantageNews(query: string, language: string): Promise<New
     console.log(`[Enhanced Financial RSS] 금융 전문 뉴스 소스에서 "${query}" 뉴스 수집`);
 
     try {
-        // 🚀 API 키 의존성 제거 - 금융 전문 RSS 소스 활용
+        // 🚀 대폭 확장된 금융 전문 RSS 소스 - 12개 소스로 확장!
         const financialRSSFeeds = [
             {
                 name: 'MarketWatch',
@@ -6745,6 +6747,46 @@ async function getAlphaVantageNews(query: string, language: string): Promise<New
                 name: 'Financial Times',
                 url: 'https://www.ft.com/rss/home',
                 priority: 4
+            },
+            {
+                name: 'TheStreet',
+                url: 'https://www.thestreet.com/rss/news',
+                priority: 5
+            },
+            {
+                name: 'Investing.com',
+                url: 'https://www.investing.com/rss/news.rss',
+                priority: 6
+            },
+            {
+                name: 'TradingView Ideas',
+                url: 'https://www.tradingview.com/rss/',
+                priority: 7
+            },
+            {
+                name: 'Financial Post',
+                url: 'https://financialpost.com/rss/',
+                priority: 8
+            },
+            {
+                name: 'Zacks Investment',
+                url: 'https://www.zacks.com/rss/news.rss',
+                priority: 9
+            },
+            {
+                name: 'Morningstar',
+                url: 'https://www.morningstar.com/rss/news',
+                priority: 10
+            },
+            {
+                name: 'Benzinga',
+                url: 'https://www.benzinga.com/rss',
+                priority: 11
+            },
+            {
+                name: 'InvestorPlace',
+                url: 'https://investorplace.com/feed/',
+                priority: 12
             }
         ];
 
@@ -6769,7 +6811,8 @@ async function getAlphaVantageNews(query: string, language: string): Promise<New
                     // 간단한 XML 파싱으로 제목과 링크 추출
                     const items = rssText.match(/<item[^>]*>[\s\S]*?<\/item>/g) || [];
 
-                    for (let i = 0; i < Math.min(items.length, 4); i++) {
+                    // 🚀 각 금융 소스에서 더 많은 뉴스 수집 (4개 → 8개)
+                    for (let i = 0; i < Math.min(items.length, 8); i++) {
                         const item = items[i];
 
                         const titleMatch = item.match(/<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/);
@@ -6814,13 +6857,149 @@ async function getAlphaVantageNews(query: string, language: string): Promise<New
 
         if (allFinancialNews.length > 0) {
             console.log(`[Enhanced Financial RSS] ✅ 총 ${allFinancialNews.length}개 금융 뉴스 수집 완료`);
-            return allFinancialNews.slice(0, 20); // 최대 20개 뉴스 반환
+            return allFinancialNews.slice(0, 60); // 최대 60개 뉴스 반환 (기존 20개 → 60개)
         }
 
         return []; // 빈 배열 반환하여 다음 소스로 넘어가기
 
     } catch (error) {
         console.warn(`[Enhanced Financial RSS] 금융 뉴스 수집 실패 for "${query}":`, error);
+        return []; // 에러 시에도 빈 배열 반환
+    }
+}
+
+// 🌟 새로운 기술/테크 전문 RSS 뉴스 소스
+async function getTechSpecializedNews(query: string, language: string): Promise<NewsArticle[]> {
+    console.log(`[Tech RSS News] 기술 전문 뉴스 소스에서 "${query}" 뉴스 수집`);
+
+    try {
+        // 🚀 기술/테크 전문 RSS 소스들
+        const techRSSFeeds = [
+            {
+                name: 'TechCrunch',
+                url: 'https://techcrunch.com/feed/',
+                priority: 1
+            },
+            {
+                name: 'Ars Technica',
+                url: 'https://feeds.arstechnica.com/arstechnica/index',
+                priority: 2
+            },
+            {
+                name: 'Wired Business',
+                url: 'https://www.wired.com/feed/business/rss',
+                priority: 3
+            },
+            {
+                name: 'The Verge',
+                url: 'https://www.theverge.com/rss/index.xml',
+                priority: 4
+            },
+            {
+                name: 'Engadget',
+                url: 'https://www.engadget.com/rss.xml',
+                priority: 5
+            },
+            {
+                name: 'MIT Technology Review',
+                url: 'https://www.technologyreview.com/feed/',
+                priority: 6
+            },
+            {
+                name: 'ZDNet',
+                url: 'https://www.zdnet.com/rss/',
+                priority: 7
+            },
+            {
+                name: 'VentureBeat',
+                url: 'https://venturebeat.com/feed/',
+                priority: 8
+            },
+            {
+                name: 'TechNewsWorld',
+                url: 'https://www.technewsworld.com/rss/',
+                priority: 9
+            },
+            {
+                name: 'IEEE Spectrum',
+                url: 'https://spectrum.ieee.org/rss',
+                priority: 10
+            }
+        ];
+
+        const allTechNews: NewsArticle[] = [];
+
+        // 각 기술 RSS 피드에서 뉴스 수집
+        for (const feed of techRSSFeeds) {
+            try {
+                console.log(`[Tech RSS] ${feed.name}에서 기술 뉴스 수집 중...`);
+                
+                const rssResponse = await fetch(feed.url, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'application/rss+xml, application/xml, text/xml'
+                    },
+                    signal: AbortSignal.timeout(6000)
+                });
+
+                if (rssResponse.ok) {
+                    const rssText = await rssResponse.text();
+                    
+                    // 간단한 XML 파싱으로 제목과 링크 추출
+                    const items = rssText.match(/<item[^>]*>[\s\S]*?<\/item>/g) || [];
+
+                    for (let i = 0; i < Math.min(items.length, 5); i++) {
+                        const item = items[i];
+
+                        const titleMatch = item.match(/<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/);
+                        const linkMatch = item.match(/<link>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/link>/);
+                        const descMatch = item.match(/<description>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/description>/);
+
+                        if (titleMatch && linkMatch) {
+                            const title = titleMatch[1].replace(/<[^>]*>/g, '').trim();
+                            const url = linkMatch[1].trim();
+                            const description = descMatch 
+                                ? descMatch[1].replace(/<[^>]*>/g, '').substring(0, 350).trim() 
+                                : title;
+
+                            // 기술/테크 키워드 관련성 체크 (매우 관대하게)
+                            const isTechRelevant = title.toLowerCase().includes(query.toLowerCase()) ||
+                                                  (description && description.toLowerCase().includes(query.toLowerCase())) ||
+                                                  ['tech', 'technology', 'AI', 'electric', 'EV', 'tesla', 'musk', 'startup', 'innovation', 'autonomous', 'software', 'chip', 'semiconductor'].some(keyword =>
+                                                      title.toLowerCase().includes(keyword.toLowerCase()) || 
+                                                      (description && description.toLowerCase().includes(keyword.toLowerCase()))
+                                                  );
+
+                            if (isTechRelevant || i < 3) { // 처음 3개는 항상 포함
+                                allTechNews.push({
+                                    title,
+                                    url,
+                                    publishedAt: new Date().toISOString(),
+                                    source: feed.name,
+                                    summary: description,
+                                    content: description,
+                                    category: 'technology',
+                                    isGeminiGenerated: false
+                                });
+                            }
+                        }
+                    }
+                }
+            } catch (feedError) {
+                console.warn(`[Tech RSS] ${feed.name} 실패:`, feedError);
+                continue;
+            }
+        }
+
+        if (allTechNews.length > 0) {
+            console.log(`[Tech RSS] ✅ 총 ${allTechNews.length}개 기술 뉴스 수집 완료`);
+            return allTechNews.slice(0, 25); // 최대 25개 뉴스 반환
+        }
+
+        return []; // 빈 배열 반환하여 다음 소스로 넘어가기
+
+    } catch (error) {
+        console.warn(`[Tech RSS] 기술 뉴스 수집 실패 for "${query}":`, error);
         return []; // 에러 시에도 빈 배열 반환
     }
 }
@@ -6850,8 +7029,8 @@ async function getYahooFinanceNews(query: string, language: string): Promise<New
         const items = xmlText.match(/<item[^>]*>[\s\S]*?<\/item>/g) || [];
         const articles: NewsArticle[] = [];
 
-        // 🚀 더 많은 뉴스 수집 (5개 → 12개)
-        for (let i = 0; i < Math.min(items.length, 12); i++) {
+        // 🚀 더 많은 뉴스 수집 (5개 → 20개)
+        for (let i = 0; i < Math.min(items.length, 20); i++) {
             const item = items[i];
 
             const titleMatch = item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/) ||
@@ -6903,7 +7082,7 @@ async function getPublicNewsAPI(query: string, language: string): Promise<NewsAr
     console.log(`[Enhanced RSS News] 다중 RSS 소스에서 뉴스 수집: "${query}"`);
 
     try {
-        // 🚀 API 키 의존성 제거 - 다중 RSS 소스 활용
+        // 🚀 대폭 확장된 다중 RSS 소스 - 10개 소스로 확장!
         const rssFeeds = [
             {
                 name: 'BBC Business',
@@ -6921,9 +7100,39 @@ async function getPublicNewsAPI(query: string, language: string): Promise<NewsAr
                 priority: 3
             },
             {
-                name: 'MarketWatch',
-                url: 'https://feeds.marketwatch.com/marketwatch/topstories/',
+                name: 'CNBC Top News',
+                url: 'https://www.cnbc.com/id/100003114/device/rss/rss.html',
                 priority: 4
+            },
+            {
+                name: 'Bloomberg Markets',
+                url: 'https://feeds.bloomberg.com/markets/news.rss',
+                priority: 5
+            },
+            {
+                name: 'Business Insider',
+                url: 'https://www.businessinsider.com/rss',
+                priority: 6
+            },
+            {
+                name: 'Forbes Business',
+                url: 'https://www.forbes.com/business/feed/',
+                priority: 7
+            },
+            {
+                name: 'AP Business News',
+                url: 'https://feeds.apnews.com/rss/apf-business.rss',
+                priority: 8
+            },
+            {
+                name: 'USA Today Money',
+                url: 'https://www.usatoday.com/money/rss/',
+                priority: 9
+            },
+            {
+                name: 'NPR Business',
+                url: 'https://feeds.npr.org/1006/rss.xml',
+                priority: 10
             }
         ];
 
@@ -6949,7 +7158,8 @@ async function getPublicNewsAPI(query: string, language: string): Promise<NewsAr
                     const items = rssText.match(/<item[^>]*>[\s\S]*?<\/item>/g) || [];
                     const rssArticles: NewsArticle[] = [];
 
-                    for (let i = 0; i < Math.min(items.length, 5); i++) {
+                    // 🚀 각 소스에서 더 많은 뉴스 수집 (5개 → 10개)
+                    for (let i = 0; i < Math.min(items.length, 10); i++) {
                         const item = items[i];
 
                         const titleMatch = item.match(/<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/);
@@ -6960,7 +7170,7 @@ async function getPublicNewsAPI(query: string, language: string): Promise<NewsAr
                             const title = titleMatch[1].replace(/<[^>]*>/g, '').trim();
                             const url = linkMatch[1].trim();
                             const description = descMatch 
-                                ? descMatch[1].replace(/<[^>]*>/g, '').substring(0, 200).trim() 
+                                ? descMatch[1].replace(/<[^>]*>/g, '').substring(0, 250).trim() 
                                 : title;
 
                             rssArticles.push({
@@ -6976,19 +7186,20 @@ async function getPublicNewsAPI(query: string, language: string): Promise<NewsAr
                         }
                     }
                     
-                    // 키워드와 관련된 뉴스만 필터링
+                    // 키워드와 관련된 뉴스만 필터링 (더 관대하게)
                     const relevantArticles = rssArticles.filter((article: NewsArticle) => 
                         article.title.toLowerCase().includes(query.toLowerCase()) ||
                         (article.summary && article.summary.toLowerCase().includes(query.toLowerCase())) ||
-                        // 일반적인 금융/비즈니스 키워드도 포함
-                        ['stock', 'market', 'business', 'finance', 'earnings', 'investment'].some(keyword =>
-                            article.title.toLowerCase().includes(keyword)
+                        // 더 많은 금융/비즈니스/기술 키워드 포함
+                        ['stock', 'market', 'business', 'finance', 'earnings', 'investment', 'trading', 'tech', 'electric', 'EV', 'tesla', 'musk'].some(keyword =>
+                            article.title.toLowerCase().includes(keyword) ||
+                            (article.summary && article.summary.toLowerCase().includes(keyword))
                         )
                     );
 
                     if (relevantArticles.length > 0) {
                         console.log(`[Enhanced RSS] ${feed.name}에서 ${relevantArticles.length}개 관련 뉴스 발견`);
-                        allArticles.push(...relevantArticles.slice(0, 3)); // 각 소스에서 최대 3개씩
+                        allArticles.push(...relevantArticles.slice(0, 6)); // 각 소스에서 최대 6개씩 (기존 3개 → 6개)
                     }
                 }
             } catch (feedError) {
@@ -6999,7 +7210,7 @@ async function getPublicNewsAPI(query: string, language: string): Promise<NewsAr
 
         if (allArticles.length > 0) {
             console.log(`[Enhanced RSS] ✅ 총 ${allArticles.length}개 뉴스 수집 완료`);
-            return allArticles.slice(0, 15); // 최대 15개 뉴스 반환
+            return allArticles.slice(0, 50); // 최대 50개 뉴스 반환 (기존 15개 → 50개)
         }
 
         // 폴백: 일반 비즈니스 뉴스
@@ -7052,8 +7263,8 @@ async function getSimpleRSSNews(query: string, language: string): Promise<NewsAr
         const items = xmlText.match(/<item[^>]*>[\s\S]*?<\/item>/g) || [];
         const articles: NewsArticle[] = [];
 
-        // 🚀 더 많은 뉴스 수집 (3개 → 8개)
-        for (let i = 0; i < Math.min(items.length, 8); i++) {
+        // 🚀 더 많은 뉴스 수집 (3개 → 15개)
+        for (let i = 0; i < Math.min(items.length, 15); i++) {
             const item = items[i];
 
             const titleMatch = item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/);
