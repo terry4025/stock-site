@@ -2955,17 +2955,17 @@ export async function getStockSpecificNews(ticker: string, language: string): Pr
         // 🔥 다중 뉴스 소스에서 데이터 수집 및 중복 제거
         const allNewsResults: NewsArticle[] = [...geminiNews, ...gitBookNews]; // 제미나이와 GitBook 뉴스를 맨 앞에
 
-        // 🔥 NewsAPI 제거하고 안정적인 무료 소스들만 사용 (Gemini 우선순위 최대화)
+        // 🚀 안정적인 RSS 기반 뉴스 소스들 (API 키 의존성 제거)
         const stockNewsSources = isInternationalQuery ? [
-            { name: 'Yahoo Finance', fn: () => getYahooFinanceNews(ticker, language), timeout: 4000, priority: 1 },
-            { name: 'Alpha Vantage Stock News', fn: () => getAlphaVantageNews(ticker, language), timeout: 3000, priority: 2 },
-            { name: 'BBC RSS News', fn: () => getSimpleRSSNews(smartQuery, language), timeout: 2500, priority: 3 },
-            { name: 'Public News API', fn: () => getPublicNewsAPI(smartQuery, language), timeout: 2000, priority: 4 },
+            { name: 'Yahoo Finance RSS', fn: () => getYahooFinanceNews(ticker, language), timeout: 5000, priority: 1 },
+            { name: 'BBC RSS News', fn: () => getSimpleRSSNews(smartQuery, language), timeout: 4000, priority: 2 },
+            { name: 'Alpha Vantage (RSS Fallback)', fn: () => getAlphaVantageNews(ticker, language), timeout: 3000, priority: 3 },
+            { name: 'Public News (RSS Fallback)', fn: () => getPublicNewsAPI(smartQuery, language), timeout: 2000, priority: 4 },
         ] : [
-            { name: 'Yahoo Finance Korea', fn: () => getYahooFinanceNews(ticker, language), timeout: 4000, priority: 1 },
-            { name: 'Public News API', fn: () => getPublicNewsAPI(smartQuery, language), timeout: 2000, priority: 2 },
-            { name: 'Alpha Vantage', fn: () => getAlphaVantageNews(ticker, language), timeout: 3000, priority: 3 },
-            { name: 'BBC RSS News', fn: () => getSimpleRSSNews(smartQuery, language), timeout: 2500, priority: 4 },
+            { name: 'Yahoo Finance Korea RSS', fn: () => getYahooFinanceNews(ticker, language), timeout: 5000, priority: 1 },
+            { name: 'BBC RSS News', fn: () => getSimpleRSSNews(smartQuery, language), timeout: 4000, priority: 2 },
+            { name: 'Alpha Vantage (RSS Fallback)', fn: () => getAlphaVantageNews(ticker, language), timeout: 3000, priority: 3 },
+            { name: 'Public News (RSS Fallback)', fn: () => getPublicNewsAPI(smartQuery, language), timeout: 2000, priority: 4 },
         ];
 
         // 🎯 제미나이 뉴스가 충분하면 외부 소스 호출 최소화
@@ -6721,45 +6721,10 @@ async function getNewsAPIHeadlines(query: string, language: string): Promise<New
 }
 
 async function getAlphaVantageNews(query: string, language: string): Promise<NewsArticle[]> {
-    console.log(`[Alpha Vantage News] Fetching news for "${query}"`);
-
-    try {
-        const apiKey = process.env.NEXT_PUBLIC_ALPHA_VANTAGE_API_KEY || 'demo';
-
-        const response = await fetch(
-            `https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=${query}&apikey=${apiKey}`
-        );
-
-        if (!response.ok) {
-            console.warn(`[Alpha Vantage News] HTTP ${response.status} for "${query}"`);
-            return []; // 빈 배열 반환하여 다음 소스로 넘어가기
-        }
-
-        const data = await response.json();
-
-        // API 한계 또는 에러 응답 체크
-        if (data.Note || data.Information) {
-            console.warn(`[Alpha Vantage News] API limit or info: ${data.Note || data.Information}`);
-            return []; // 빈 배열 반환
-        }
-
-        if (!data.feed || !Array.isArray(data.feed) || data.feed.length === 0) {
-            console.warn(`[Alpha Vantage News] No news data for "${query}"`);
-            return []; // 에러 대신 빈 배열 반환
-        }
-
-        return data.feed.slice(0, 20).map((article: any) => ({
-            title: article.title || 'No Title',
-            url: article.url || '#',
-            publishedAt: article.time_published || new Date().toISOString(),
-            source: article.source || 'Alpha Vantage',
-            summary: article.summary || ''
-        }));
-
-    } catch (error) {
-        console.warn(`[Alpha Vantage News] Error for "${query}":`, error);
-        return []; // 에러 시에도 빈 배열 반환하여 다음 소스로 넘어가기
-    }
+    console.log(`[Alpha Vantage News] 스킵 - 데모 키 제한으로 인해 대체 소스 사용`);
+    
+    // 데모 키 제한 때문에 기존 RSS 소스 활용
+    return getSimpleRSSNews(query, language);
 }
 
 async function getYahooFinanceNews(query: string, language: string): Promise<NewsArticle[]> {
@@ -6836,61 +6801,10 @@ async function getYahooFinanceNews(query: string, language: string): Promise<New
 }
 
 async function getPublicNewsAPI(query: string, language: string): Promise<NewsArticle[]> {
-    console.log(`[Public News API] Fetching news for "${query}"`);
-
-    try {
-        // NewsData.io 무료 API 사용 (demo 키 사용)
-        const response = await fetch(
-            `https://newsdata.io/api/1/news?apikey=pub_62684cd4b3e9f7f3e3db67432c1cb77a8d72a&q=${encodeURIComponent(query)}&language=${language === 'kr' ? 'ko' : 'en'}&category=business,technology`,
-            {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                },
-                signal: AbortSignal.timeout(3000)
-            }
-        );
-
-        if (!response.ok) {
-            console.warn(`[Public News API] HTTP ${response.status} for "${query}"`);
-            throw new Error(`HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-
-        if (!data.results || data.results.length === 0) {
-            console.warn(`[Public News API] No news data for "${query}"`);
-            throw new Error('No results');
-        }
-
-        const articles = data.results.slice(0, 5).map((article: any) => ({
-            title: article.title || 'No Title',
-            url: article.link || '#',
-            publishedAt: article.pubDate || new Date().toISOString(),
-            source: article.source_id || 'Public News',
-            summary: article.description || '',
-            content: article.content || article.description || '',
-            category: 'business',
-            isGeminiGenerated: false
-        }));
-
-        console.log(`[Public News API] ✅ Got ${articles.length} articles for "${query}"`);
-        return articles;
-
-    } catch (error) {
-        console.warn(`[Public News API] Error for "${query}":`, error);
-
-        // 폴백: 기본 비즈니스 뉴스 생성
-        return [{
-            title: `${query} 관련 비즈니스 뉴스`,
-            url: `https://www.google.com/search?q=${encodeURIComponent(query)}+news`,
-            publishedAt: new Date().toISOString(),
-            source: 'Business News',
-            summary: `${query}에 대한 최신 비즈니스 뉴스와 업계 동향을 확인하세요.`,
-            content: `${query} 관련 최신 뉴스를 Google 검색을 통해 확인할 수 있습니다.`,
-            category: 'business',
-            isGeminiGenerated: false
-        }];
-    }
+    console.log(`[Public News API] 스킵 - 대신 다중 RSS 소스 사용`);
+    
+    // API 키 의존성 제거하고 RSS 기반 뉴스로 대체
+    return getSimpleRSSNews(query, language);
 }
 
 // 🛡️ 심플 RSS 뉴스 피드 (Guardian 대신 안정적인 무료 뉴스)
@@ -7021,8 +6935,8 @@ async function findLatestGitBookDate(): Promise<string> {
         }
 
         // 마크다운 URL 우선 시도
-        const markdownUrl = `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/bloomberg.md`;
-        const fallbackUrl = `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/bloomberg`;
+        const markdownUrl = `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/undefined.md`;
+        const fallbackUrl = `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/undefined`;
 
         console.log(`[GitBook] 📅 평일 날짜 확인 중: ${dateString}`);
         console.log(`[GitBook] 🎯 마크다운 URL 우선 시도: ${markdownUrl}`);
@@ -7099,7 +7013,7 @@ async function checkForNextDayNews(): Promise<{ hasNew: boolean; newDate?: strin
 
         // 3. 다음날 뉴스 링크 존재 여부 확인 (여러 패턴 테스트)
         const testUrls = [
-            `https://futuresnow.gitbook.io/newstoday/${nextDateString}/news/today/bloomberg`,
+            `https://futuresnow.gitbook.io/newstoday/${nextDateString}/news/today/undefined`,
             `https://futuresnow.gitbook.io/newstoday/${nextDateString}/greeting/preview`,
             `https://futuresnow.gitbook.io/newstoday/${nextDateString}`
         ];
@@ -8441,13 +8355,13 @@ async function findLatestValidGitBookDate(): Promise<string | null> {
 
             // 마크다운 URL 우선 시도
             const markdownUrls = [
-                `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/bloomberg.md`,
+                `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/undefined.md`,
                 `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/undefined.md`
             ];
 
             // HTML 폴백 URL
             const htmlUrls = [
-                `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/bloomberg`,
+                `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/undefined`,
                 `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/undefined`,
                 `https://futuresnow.gitbook.io/newstoday/${dateString}/greeting/preview`
             ];
