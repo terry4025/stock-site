@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, Suspense, useRef } from "react";
-import { getAiAnalysis, getNewsSentiment, getRealtimeFearGreedIndex, getHeadlines, getStockAndChartData, getStockSpecificNews, getMarketNews, startAutoNewsUpdate, getDynamicDateStatus, manualCheckForNewNews } from "@/app/actions";
+import { getAiAnalysis, getNewsSentiment, getRealtimeFearGreedIndex, getHeadlines, getStockAndChartData, getStockSpecificNews, getMarketNews, startAutoNewsUpdate, getDynamicDateStatus, manualCheckForNewNews, getGitBookSchedule } from "@/app/actions";
 import { useLanguage } from "@/hooks/useLanguage";
 import { useAuth } from "@/contexts/AuthContext";
 import { type StockData, type NewsArticle, type ChartData, type ChartDataPoint } from "@/lib/types";
@@ -14,6 +14,7 @@ import FinancialChart from "@/components/kryptovision/FinancialChart";
 import StockDataTable from "@/components/kryptovision/StockDataTable";
 import AiAnalysis from "@/components/kryptovision/AiAnalysis";
 import NewsCards from "@/components/kryptovision/NewsCards";
+import ScheduleCards from "@/components/kryptovision/ScheduleCards";
 import SidebarInfo from "@/components/kryptovision/SidebarInfo";
 import FearGreedIndex from "@/components/kryptovision/FearGreedIndex";
 import RealtimeStatus from "@/components/kryptovision/RealtimeStatus";
@@ -34,6 +35,10 @@ export default function DashboardClient({ initialData }: { initialData: any }) {
   const [chartData, setChartData] = useState<ChartData>(initialData.chartData);
   const [newsData, setNewsData] = useState<NewsArticle[]>(initialData.newsData);
   const [marketNews, setMarketNews] = useState<NewsArticle[]>(initialData.marketNews);
+  const [scheduleItems, setScheduleItems] = useState<any[]>([]);
+  const [scheduleTitle, setScheduleTitle] = useState<string>('');
+  const [workingScheduleUrl, setWorkingScheduleUrl] = useState<string>('');
+  const [loadingSchedule, setLoadingSchedule] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState<any>(null);
   const [newsSentiment, setNewsSentiment] = useState<any>(null);
   const [fearGreedIndex, setFearGreedIndex] = useState<number | null>(initialData.fearGreedIndex);
@@ -101,6 +106,17 @@ export default function DashboardClient({ initialData }: { initialData: any }) {
           console.warn('⚠️ [DashboardClient] Auto news update failed:', autoUpdateError);
           // 에러가 있어도 앱 초기화는 계속
         }
+
+        // 🚀 자동 일정 업데이트 시스템 시작
+        console.log('📅 [DashboardClient] Starting auto schedule update system...');
+        try {
+          const { startAutoScheduleUpdate } = await import('@/app/actions');
+          const autoScheduleResult = await startAutoScheduleUpdate();
+          console.log('📅 [DashboardClient] Auto schedule update result:', autoScheduleResult);
+        } catch (autoScheduleError) {
+          console.warn('⚠️ [DashboardClient] Auto schedule update failed:', autoScheduleError);
+          // 에러가 있어도 앱 초기화는 계속
+        }
         
         // 모든 초기화 작업 완료 대기
         await Promise.all([minLoadingPromise, userDataPromise]);
@@ -159,6 +175,43 @@ export default function DashboardClient({ initialData }: { initialData: any }) {
     };
   }, [language, ticker]);
 
+  // 📅 새로운 일정 감지 이벤트 리스닝 (자동 일정 업데이트)
+  useEffect(() => {
+    const handleNewSchedule = async (event: Event) => {
+      const customEvent = event as CustomEvent;
+      const { date, scheduleItems, scheduleTitle, workingUrl } = customEvent.detail;
+      console.log(`📅 [DashboardClient] New schedule detected for ${date}:`, scheduleItems?.length || 0, 'items');
+      
+      try {
+        // 이벤트에서 받은 데이터를 직접 사용 (API 재호출 없이)
+        console.log('📅 [DashboardClient] Using schedule data from auto-update event...');
+        setScheduleItems(scheduleItems);
+        setScheduleTitle(scheduleTitle);
+        if (workingUrl) {
+          setWorkingScheduleUrl(workingUrl);
+          console.log('📅 [DashboardClient] Working schedule URL updated from event:', workingUrl);
+        }
+        
+        console.log('📅 [DashboardClient] Schedule auto-refresh completed');
+        
+        // 사용자에게 알림 (옵션)
+        if (typeof window !== 'undefined') {
+          console.log('🔔 [DashboardClient] New schedule available!');
+        }
+        
+      } catch (error) {
+        console.error('❌ [DashboardClient] Failed to auto-refresh schedule:', error);
+      }
+    };
+
+    // 새로운 일정 이벤트 리스너 등록
+    window.addEventListener('newScheduleAvailable', handleNewSchedule);
+
+    return () => {
+      window.removeEventListener('newScheduleAvailable', handleNewSchedule);
+    };
+  }, [language]);
+
   // 🔄 설정 변경 이벤트 리스닝 (새로고침 간격 업데이트)
   useEffect(() => {
     const handleRefreshIntervalChange = (event: CustomEvent) => {
@@ -213,6 +266,68 @@ export default function DashboardClient({ initialData }: { initialData: any }) {
       clearInterval(fearGreedInterval);
     };
   }, []);
+
+  // 📅 주요 일정 데이터 로드
+  useEffect(() => {
+    const loadScheduleData = async () => {
+      setLoadingSchedule(true);
+      try {
+        console.log('[Schedule] 📅 주요 일정 데이터 로드 시작...');
+        console.log('[Schedule] 🔍 getGitBookSchedule 함수 호출 중...');
+        
+        const result = await getGitBookSchedule(language);
+        
+        console.log('[Schedule] 📊 getGitBookSchedule 결과:', result);
+        console.log('[Schedule] 📋 scheduleItems:', result.scheduleItems);
+        console.log('[Schedule] 🏷️ scheduleTitle:', result.scheduleTitle);
+        console.log('[Schedule] 🔗 workingUrl:', result.workingUrl);
+        
+        setScheduleItems(result.scheduleItems);
+        setScheduleTitle(result.scheduleTitle);
+        if (result.workingUrl) {
+          setWorkingScheduleUrl(result.workingUrl);
+        }
+        console.log(`[Schedule] ✅ 일정 데이터 로드 완료: ${result.scheduleItems.length}개 항목`);
+        
+        // 각 항목 상세 로그
+        if (result.scheduleItems.length > 0) {
+          console.log('[Schedule] 📋 로드된 일정 상세:');
+          result.scheduleItems.forEach((item, index) => {
+            console.log(`  ${index + 1}. ${item.date} ${item.time} ${item.country} - ${item.indicator} (${item.importance})`);
+          });
+        }
+        
+      } catch (error) {
+        console.error('[Schedule] ❌ 일정 데이터 로드 실패:', error);
+        console.error('[Schedule] 🔍 에러 상세:', error.message);
+        console.error('[Schedule] 📊 에러 스택:', error.stack);
+        // 폴백: 빈 일정으로 설정
+        setScheduleItems([]);
+        const today = new Date();
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const formatDate = (date: Date): string => {
+          const month = String(date.getMonth() + 1).padStart(2, '0');
+          const day = String(date.getDate()).padStart(2, '0');
+          return `${month}/${day}`;
+        };
+        const tomorrowStr = formatDate(tomorrow);
+        setScheduleTitle(`📅 다음날 주요 일정 - (${tomorrowStr}) 경제지표`);
+      } finally {
+        setLoadingSchedule(false);
+      }
+    };
+
+    // 초기 로드
+    loadScheduleData();
+
+    // 30분마다 일정 데이터 업데이트
+    const scheduleInterval = setInterval(loadScheduleData, 30 * 60 * 1000);
+
+    return () => {
+      clearInterval(scheduleInterval);
+    };
+  }, [language]);
 
   // 🚀 실시간 주식 데이터 업데이트 (동적 간격)
   useEffect(() => {
@@ -432,13 +547,7 @@ export default function DashboardClient({ initialData }: { initialData: any }) {
             <StockSearch onSelectTicker={handleSelectTicker} currentTicker={ticker} />
           </div>
           
-          {/* 실시간 업데이트 상태 표시 */}
-          <RealtimeStatus 
-            isEnabled={isRealtimeEnabled}
-            lastUpdateTime={lastUpdateTime}
-            onToggle={handleToggleRealtime}
-            ticker={ticker}
-          />
+
         </div>
         
         {/* Global Indices Card */}
@@ -458,7 +567,7 @@ export default function DashboardClient({ initialData }: { initialData: any }) {
               {loading || chartData.length === 0 ? <Skeleton className="h-[450px] w-full" /> : <FinancialChart data={chartData} />}
             </div>
             {loading || !stockData ? <Skeleton className="h-[200px] w-full" /> : <StockDataTable data={stockData} />}
-            {/* 📰 최신 뉴스 카드를 가격/볼륨 정보 아래로 이동 */}
+            {/* 📰 최신 뉴스 카드 */}
             <NewsCards news={newsData} marketNews={marketNews} loading={loadingNews} stockData={stockData} />
           </div>
           <div className="grid auto-rows-max items-start gap-4 md:gap-8">
@@ -477,7 +586,9 @@ export default function DashboardClient({ initialData }: { initialData: any }) {
                 chartTrend={(stockData?.dailyChange?.percentage || 0) > 0 ? 'uptrend' : (stockData?.dailyChange?.percentage || 0) < 0 ? 'downtrend' : 'sideways'}
               />
             </Suspense>
-            {/* 📅 일정 + 💬 월가의 말말말 사이드바 추가 */}
+            {/* 📅 주요 일정 카드를 AI 분석과 월가의 말말말 사이에 배치 */}
+            <ScheduleCards scheduleItems={scheduleItems} loading={loadingSchedule} workingScheduleUrl={workingScheduleUrl} />
+            {/* 💬 월가의 말말말 사이드바 */}
             <SidebarInfo marketNews={marketNews} />
           </div>
         </div>

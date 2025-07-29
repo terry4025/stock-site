@@ -72,7 +72,7 @@ export default function SidebarInfo({ marketNews }: SidebarInfoProps) {
     return null;
   })();
 
-  // 💬 월가의 말말말 정보 추출 (시장 뉴스나 전역에서)
+  //  월가의 말말말 정보 추출 (시장 뉴스나 전역에서)
   const wallStreetInfo = (() => {
     // 1. 시장 뉴스에서 월가 코멘트 찾기
     const marketArticleWithComments = marketNews?.find(article => 
@@ -82,7 +82,7 @@ export default function SidebarInfo({ marketNews }: SidebarInfoProps) {
     if (marketArticleWithComments?.wallStreetComments) {
       return {
         comments: marketArticleWithComments.wallStreetComments,
-        title: marketArticleWithComments.wallStreetTitle || '💬 월가의 말말말'
+        title: marketArticleWithComments.wallStreetTitle || '월가의 말말말'
       };
     }
     
@@ -90,7 +90,7 @@ export default function SidebarInfo({ marketNews }: SidebarInfoProps) {
     if (sidebarState.wallStreetComments && sidebarState.wallStreetComments.length > 0) {
       return {
         comments: sidebarState.wallStreetComments,
-        title: '💬 월가의 말말말'
+        title: '월가의 말말말'
       };
     }
     
@@ -102,19 +102,7 @@ export default function SidebarInfo({ marketNews }: SidebarInfoProps) {
       <div className="space-y-4">
         <Card>
           <CardHeader>
-            <CardTitle>📅 다음날 주요 일정</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {[...Array(3)].map((_, i) => (
-                <Skeleton key={i} className="h-4 w-full" />
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>💬 월가의 말말말</CardTitle>
+            <CardTitle>월가의 말말말</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
@@ -130,22 +118,7 @@ export default function SidebarInfo({ marketNews }: SidebarInfoProps) {
 
   return (
     <div className="space-y-4">
-      {/* 📅 다음날 주요 일정 - 독립 섹션 */}
-      {scheduleInfo && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">{scheduleInfo.title}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <MarketSchedule 
-              schedule={scheduleInfo.schedule}
-              scheduleTitle={scheduleInfo.title}
-            />
-          </CardContent>
-        </Card>
-      )}
-
-      {/* 💬 월가의 말말말 - 독립 섹션 */}
+      {/* 월가의 말말말 - 독립 섹션 */}
       {wallStreetInfo && (
         <WallStreetComments 
           comments={wallStreetInfo.comments}

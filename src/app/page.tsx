@@ -1,6 +1,5 @@
 import { getStockAndChartData, getStockSpecificNews, getMarketNews, getRealtimeFearGreedIndex } from "@/app/actions";
 import DashboardClient from "@/components/kryptovision/DashboardClient";
-import "@/lib/connection-test"; // Supabase 연결 테스트 함수 로드
 import { mockChartData, mockStockData, mockNewsData, mockMarketNewsData } from "@/lib/mock-data";
 import type { StockData, ChartDataPoint, NewsArticle } from "@/lib/types";
 import { headers } from "next/headers";

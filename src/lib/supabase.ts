@@ -1,8 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = 'https://nzcsyflhkpcugbcewzcj.supabase.co';
-// anon 키 사용 (일반 사용)
-const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im56Y3N5Zmxoa3BjdWdiY2V3emNqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTExNzY2OTQsImV4cCI6MjA2Njc1MjY5NH0.FdS0UsNIogYKspkry9PjI7yk2sIaC4VbWpzGVd3yrQc';
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://nzcsyflhkpcugbcewzcj.supabase.co';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im56Y3N5Zmxoa3BjdWdiY2V3emNqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTExNzY2OTQsImV4cCI6MjA2Njc1MjY5NH0.FdS0UsNIogYKspkry9PjI7yk2sIaC4VbWpzGVd3yrQc';
 
 // Supabase 클라이언트 생성
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);

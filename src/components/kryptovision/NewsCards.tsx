@@ -329,11 +329,17 @@ export default function NewsCards({ news, marketNews, loading, stockData }: News
     const isGeminiNews = article.isGeminiGenerated;
     const region = classifyNewsRegion(article);
     
+    // 🔥 뉴스 제목에서 "(원문)" 텍스트 제거
+    const cleanTitle = article.title
+      ?.replace(/\s*\(원문\)\s*/g, '')
+      ?.replace(/\s*원문\s*/g, '')
+      ?.trim() || '';
+    
     return (
       <div className="flex items-start justify-between">
         <div className="flex-1 min-w-0">
           <h4 className={`text-sm font-medium line-clamp-2 mb-1 ${isGeminiNews ? 'text-blue-700 dark:text-blue-300' : ''}`}>
-            {article.title}
+            {cleanTitle}
           </h4>
           <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
             <span className="shrink-0">{article.source}</span>
@@ -483,7 +489,7 @@ export default function NewsCards({ news, marketNews, loading, stockData }: News
                   variant="outline"
                   size="sm"
                   className="h-9 px-3 text-sm bg-green-50 hover:bg-green-100 text-green-700 border-green-200 dark:bg-green-950 dark:hover:bg-green-900 dark:text-green-300 dark:border-green-800"
-                  onClick={() => window.open('https://www.youtube.com/watch?v=7n1vAi2rz_Q', '_blank')}
+                  onClick={() => window.open('https://www.youtube.com/@futuresnow', '_blank')}
                   title="오선의 미국 증시 실시간 라이브 방송 시청하기"
                 >
                   <div className="flex items-center gap-2">

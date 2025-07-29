@@ -707,6 +707,9 @@ export default function NewsFeed({ news, marketNews, loading, stockData }: NewsF
       .replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"')
       .replace(/&#39;/g, "'")
+      // 🔥 "(원문)" 텍스트 필터링 추가
+      .replace(/\s*\(원문\)\s*/g, '')
+      .replace(/\s*원문\s*/g, '')
       .replace(/\s+/g, ' ')
       .trim();
   };
