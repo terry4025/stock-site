@@ -6813,7 +6813,7 @@ async function getAlphaVantageNews(query: string, language: string): Promise<New
             },
             {
                 name: 'Yahoo Finance',
-                url: 'https://finance.yahoo.com/rss/',
+                url: 'https://feeds.finance.yahoo.com/rss/2.0/topstories',
                 priority: 2
             },
             {
@@ -6828,37 +6828,37 @@ async function getAlphaVantageNews(query: string, language: string): Promise<New
             },
             {
                 name: 'TheStreet',
-                url: 'https://www.thestreet.com/rss/news',
+                url: 'https://www.thestreet.com/feeds/latest-news',
                 priority: 5
             },
             {
                 name: 'Investing.com',
-                url: 'https://www.investing.com/rss/news.rss',
+                url: 'https://www.investing.com/rss/news_25.rss',
                 priority: 6
             },
             {
-                name: 'TradingView Ideas',
-                url: 'https://www.tradingview.com/rss/',
+                name: 'CNBC Finance',
+                url: 'https://www.cnbc.com/id/10000664/device/rss/rss.html',
                 priority: 7
             },
             {
-                name: 'Financial Post',
-                url: 'https://financialpost.com/rss/',
+                name: 'Reuters Finance',
+                url: 'https://www.reuters.com/rss/businessNews',
                 priority: 8
             },
             {
-                name: 'Zacks Investment',
-                url: 'https://www.zacks.com/rss/news.rss',
+                name: 'Bloomberg Finance',
+                url: 'https://feeds.bloomberg.com/markets/news.rss',
                 priority: 9
             },
             {
-                name: 'Morningstar',
-                url: 'https://www.morningstar.com/rss/news',
+                name: 'Wall Street Journal',
+                url: 'https://feeds.a.dj.com/rss/RSSMarketsMain.xml',
                 priority: 10
             },
             {
                 name: 'Benzinga',
-                url: 'https://www.benzinga.com/rss',
+                url: 'https://www.benzinga.com/feed',
                 priority: 11
             },
             {
@@ -6927,8 +6927,26 @@ async function getAlphaVantageNews(query: string, language: string): Promise<New
                         }
                     }
                 }
-            } catch (feedError) {
-                console.warn(`[Enhanced Financial RSS] ${feed.name} 실패:`, feedError);
+            } catch (feedError: unknown) {
+                const errorMsg = feedError instanceof Error ? feedError.message : String(feedError);
+                const errorCode = feedError instanceof Error && 'code' in feedError ? feedError.code : 'unknown';
+                
+                console.warn(`[Enhanced Financial RSS] ${feed.name} 실패:`, {
+                    url: feed.url,
+                    error: errorMsg,
+                    code: errorCode,
+                    type: typeof feedError
+                });
+                
+                // DNS 에러나 네트워크 에러 구분해서 로깅
+                if (errorMsg.includes('ENOTFOUND')) {
+                    console.warn(`[Enhanced Financial RSS] ${feed.name}: DNS 조회 실패 - 도메인이 존재하지 않습니다.`);
+                } else if (errorMsg.includes('ECONNREFUSED')) {
+                    console.warn(`[Enhanced Financial RSS] ${feed.name}: 연결 거부 - 서버가 응답하지 않습니다.`);
+                } else if (errorMsg.includes('timeout')) {
+                    console.warn(`[Enhanced Financial RSS] ${feed.name}: 타임아웃 - 응답 시간 초과`);
+                }
+                
                 continue;
             }
         }
@@ -6964,8 +6982,8 @@ async function getTechSpecializedNews(query: string, language: string): Promise<
                 priority: 2
             },
             {
-                name: 'Wired Business',
-                url: 'https://www.wired.com/feed/business/rss',
+                name: 'Wired',
+                url: 'https://www.wired.com/feed/rss',
                 priority: 3
             },
             {
@@ -6985,7 +7003,7 @@ async function getTechSpecializedNews(query: string, language: string): Promise<
             },
             {
                 name: 'ZDNet',
-                url: 'https://www.zdnet.com/rss/',
+                url: 'https://www.zdnet.com/news/rss.xml',
                 priority: 7
             },
             {
@@ -6994,13 +7012,13 @@ async function getTechSpecializedNews(query: string, language: string): Promise<
                 priority: 8
             },
             {
-                name: 'TechNewsWorld',
-                url: 'https://www.technewsworld.com/rss/',
+                name: 'Gizmodo',
+                url: 'https://gizmodo.com/rss',
                 priority: 9
             },
             {
-                name: 'IEEE Spectrum',
-                url: 'https://spectrum.ieee.org/rss',
+                name: 'TechNews',
+                url: 'https://feeds.feedburner.com/technews',
                 priority: 10
             }
         ];
@@ -7063,8 +7081,26 @@ async function getTechSpecializedNews(query: string, language: string): Promise<
                         }
                     }
                 }
-            } catch (feedError) {
-                console.warn(`[Tech RSS] ${feed.name} 실패:`, feedError);
+            } catch (feedError: unknown) {
+                const errorMsg = feedError instanceof Error ? feedError.message : String(feedError);
+                const errorCode = feedError instanceof Error && 'code' in feedError ? feedError.code : 'unknown';
+                
+                console.warn(`[Tech RSS] ${feed.name} 실패:`, {
+                    url: feed.url,
+                    error: errorMsg,
+                    code: errorCode,
+                    type: typeof feedError
+                });
+                
+                // DNS 에러나 네트워크 에러 구분해서 로깅
+                if (errorMsg.includes('ENOTFOUND')) {
+                    console.warn(`[Tech RSS] ${feed.name}: DNS 조회 실패 - 도메인이 존재하지 않습니다.`);
+                } else if (errorMsg.includes('ECONNREFUSED')) {
+                    console.warn(`[Tech RSS] ${feed.name}: 연결 거부 - 서버가 응답하지 않습니다.`);
+                } else if (errorMsg.includes('timeout')) {
+                    console.warn(`[Tech RSS] ${feed.name}: 타임아웃 - 응답 시간 초과`);
+                }
+                
                 continue;
             }
         }
@@ -7161,15 +7197,15 @@ async function getPublicNewsAPI(query: string, language: string): Promise<NewsAr
 
     try {
         // 🚀 대폭 확장된 다중 RSS 소스 - 10개 소스로 확장!
-        const rssFeeds = [
+                const rssFeeds = [
             {
                 name: 'BBC Business',
                 url: 'https://feeds.bbci.co.uk/news/business/rss.xml',
                 priority: 1
             },
             {
-                name: 'Reuters Business',  
-                url: 'https://www.reuters.com/business/',
+                name: 'Reuters Business',
+                url: 'https://www.reuters.com/rss/businessNews',
                 priority: 2
             },
             {
@@ -7198,13 +7234,13 @@ async function getPublicNewsAPI(query: string, language: string): Promise<NewsAr
                 priority: 7
             },
             {
-                name: 'AP Business News',
-                url: 'https://feeds.apnews.com/rss/apf-business.rss',
+                name: 'Wall Street Journal',
+                url: 'https://feeds.a.dj.com/rss/RSSMarketsMain.xml',
                 priority: 8
             },
             {
-                name: 'USA Today Money',
-                url: 'https://www.usatoday.com/money/rss/',
+                name: 'Financial News',
+                url: 'https://www.ft.com/rss/home',
                 priority: 9
             },
             {
@@ -7224,9 +7260,11 @@ async function getPublicNewsAPI(query: string, language: string): Promise<NewsAr
                 const rssResponse = await fetch(feed.url, {
                     headers: {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': 'application/rss+xml, application/xml, text/xml'
+                        'Accept': 'application/rss+xml, application/xml, text/xml',
+                        'Cache-Control': 'no-cache'
                     },
-                    signal: AbortSignal.timeout(4000)
+                    signal: AbortSignal.timeout(8000), // 타임아웃 증가
+                    redirect: 'follow'
                 });
 
                 if (rssResponse.ok) {
@@ -7280,8 +7318,26 @@ async function getPublicNewsAPI(query: string, language: string): Promise<NewsAr
                         allArticles.push(...relevantArticles.slice(0, 6)); // 각 소스에서 최대 6개씩 (기존 3개 → 6개)
                     }
                 }
-            } catch (feedError) {
-                console.warn(`[Enhanced RSS] ${feed.name} 실패:`, feedError);
+            } catch (feedError: unknown) {
+                const errorMsg = feedError instanceof Error ? feedError.message : String(feedError);
+                const errorCode = feedError instanceof Error && 'code' in feedError ? feedError.code : 'unknown';
+                
+                console.warn(`[Enhanced RSS] ${feed.name} 실패:`, {
+                    url: feed.url,
+                    error: errorMsg,
+                    code: errorCode,
+                    type: typeof feedError
+                });
+                
+                // DNS 에러나 네트워크 에러 구분해서 로깅
+                if (errorMsg.includes('ENOTFOUND')) {
+                    console.warn(`[Enhanced RSS] ${feed.name}: DNS 조회 실패 - 도메인이 존재하지 않습니다.`);
+                } else if (errorMsg.includes('ECONNREFUSED')) {
+                    console.warn(`[Enhanced RSS] ${feed.name}: 연결 거부 - 서버가 응답하지 않습니다.`);
+                } else if (errorMsg.includes('timeout')) {
+                    console.warn(`[Enhanced RSS] ${feed.name}: 타임아웃 - 응답 시간 초과`);
+                }
+                
                 continue;
             }
         }
