@@ -1162,27 +1162,28 @@ Summary:`;
     }
 }
 
-// 🔍 Google 검색 기능이 포함된 Gemini AI 함수
+// 🔍 Google 검색 기능이 포함된 Gemini AI 함수 (폴백 지원)
 export async function getGeminiWithGoogleSearch(query: string, language: string): Promise<{ response: string; searchUsed: boolean; error?: string; }> {
     console.log(`[Gemini + Google Search] Processing query: "${query.substring(0, 50)}..."`);
 
-    try {
-        // 🔑 Gemini API 호출 (Google Search grounding 포함)
-        const geminiApiKey = 'AIzaSyBeiOwYWGupnzAXMO3t6pdVyYHFptd16Og';
+    // 🔑 Gemini API 키
+    const geminiApiKey = 'AIzaSyBeiOwYWGupnzAXMO3t6pdVyYHFptd16Og';
 
-        const prompt = language === 'kr'
-            ? `다음 질문에 대해 최신 정보를 검색하여 한국어로 답변해주세요. 필요하면 Google 검색을 통해 실시간 정보를 찾아주세요:
+    const prompt = language === 'kr'
+        ? `다음 질문에 대해 최신 정보를 검색하여 한국어로 답변해주세요. 필요하면 Google 검색을 통해 실시간 정보를 찾아주세요:
 
 질문: ${query}
 
 답변:`
-            : `Please answer the following question using the latest information. Use Google Search if needed to find real-time information:
+        : `Please answer the following question using the latest information. Use Google Search if needed to find real-time information:
 
 Question: ${query}
 
 Answer:`;
 
-        console.log(`[Gemini + Google Search] Calling API with search grounding...`);
+    // 🚀 첫 번째 시도: Google Search grounding 포함
+    try {
+        console.log(`[Gemini + Google Search] 시도 1: Google Search grounding 사용...`);
 
         const response = await Promise.race([
             fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`, {
@@ -1242,9 +1243,10 @@ Answer:`;
 
         if (!response.ok) {
             const errorText = await response.text().catch(() => 'Failed to read error response');
-            console.warn(`[Gemini + Google Search] API failed with status ${response.status}: ${errorText}`);
-
-            throw new Error(`Gemini Google Search API failed: ${response.status}`);
+            console.warn(`[Gemini + Google Search] Google Search grounding 실패 (${response.status}): ${errorText}`);
+            
+            // 🔄 Google Search grounding 실패 시 기본 Gemini로 폴백
+            throw new Error(`Google Search grounding failed: ${response.status}`);
         }
 
         const data = await response.json();
@@ -1272,25 +1274,101 @@ Answer:`;
         // Google Search 사용 여부 확인
         const searchUsed = data.candidates[0].groundingMetadata?.webSearchQueries?.length > 0 || false;
 
-        console.log(`[Gemini + Google Search] ✅ Success (${responseText.length} chars, search used: ${searchUsed})`);
+        console.log(`[Gemini + Google Search] ✅ Google Search grounding 성공 (${responseText.length} chars, search used: ${searchUsed})`);
 
         return {
             response: responseText,
             searchUsed: searchUsed,
         };
 
-    } catch (error) {
-        console.warn(`[Gemini + Google Search] Error:`, error);
+    } catch (searchError) {
+        console.warn(`[Gemini + Google Search] Google Search grounding 실패, 기본 Gemini로 폴백 시도...`, searchError);
 
-        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        // 🔄 두 번째 시도: 기본 Gemini API (Google Search 없이)
+        try {
+            console.log(`[Gemini + Google Search] 시도 2: 기본 Gemini API 사용...`);
 
-        return {
-            response: language === 'kr'
-                ? `Google 검색 기능을 사용한 AI 응답을 생성할 수 없습니다. (${errorMsg})`
-                : `Unable to generate AI response with Google Search. (${errorMsg})`,
-            searchUsed: false,
-            error: errorMsg
-        };
+            const fallbackResponse = await Promise.race([
+                fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'Mozilla/5.0 (compatible; NewsApp/1.0)'
+                    },
+                    body: JSON.stringify({
+                        contents: [{
+                            parts: [{
+                                text: prompt
+                            }]
+                        }],
+                        generationConfig: {
+                            temperature: 0.4,
+                            topK: 40,
+                            topP: 0.9,
+                            maxOutputTokens: 500,
+                            candidateCount: 1
+                        },
+                        safetySettings: [
+                            {
+                                category: "HARM_CATEGORY_HARASSMENT",
+                                threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                            },
+                            {
+                                category: "HARM_CATEGORY_HATE_SPEECH",
+                                threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                            },
+                            {
+                                category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                                threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                            },
+                            {
+                                category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+                                threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                            }
+                        ]
+                        // 🚫 Google Search grounding 제거
+                    })
+                }),
+                new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error('Basic Gemini timeout (10s)')), 10000)
+                )
+            ]);
+
+            if (!fallbackResponse.ok) {
+                const fallbackErrorText = await fallbackResponse.text().catch(() => 'Failed to read error response');
+                console.warn(`[Gemini + Google Search] 기본 Gemini도 실패 (${fallbackResponse.status}): ${fallbackErrorText}`);
+                throw new Error(`Basic Gemini API failed: ${fallbackResponse.status}`);
+            }
+
+            const fallbackData = await fallbackResponse.json();
+
+            // 응답 데이터 검증
+            if (!fallbackData?.candidates?.[0]?.content?.parts?.[0]?.text) {
+                throw new Error('Invalid fallback API response');
+            }
+
+            const fallbackText = fallbackData.candidates[0].content.parts[0].text.trim();
+
+            console.log(`[Gemini + Google Search] ✅ 기본 Gemini 폴백 성공 (${fallbackText.length} chars)`);
+
+            return {
+                response: fallbackText,
+                searchUsed: false, // Google Search는 사용되지 않음
+            };
+
+        } catch (fallbackError) {
+            console.error(`[Gemini + Google Search] 모든 시도 실패:`, fallbackError);
+
+            const errorMsg = fallbackError instanceof Error ? fallbackError.message : 'Unknown error';
+
+            return {
+                response: language === 'kr'
+                    ? `AI 응답을 생성할 수 없습니다. Google Search와 기본 Gemini 모두 실패했습니다. (${errorMsg})`
+                    : `Unable to generate AI response. Both Google Search and basic Gemini failed. (${errorMsg})`,
+                searchUsed: false,
+                error: errorMsg
+            };
+        }
     }
 }
 
