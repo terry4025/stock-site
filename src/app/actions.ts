@@ -2955,17 +2955,17 @@ export async function getStockSpecificNews(ticker: string, language: string): Pr
         // 🔥 다중 뉴스 소스에서 데이터 수집 및 중복 제거
         const allNewsResults: NewsArticle[] = [...geminiNews, ...gitBookNews]; // 제미나이와 GitBook 뉴스를 맨 앞에
 
-        // 🚀 안정적인 RSS 기반 뉴스 소스들 (API 키 의존성 제거)
+        // 🚀 강화된 RSS 기반 뉴스 시스템 - 더 많은 최신 뉴스 수집
         const stockNewsSources = isInternationalQuery ? [
-            { name: 'Yahoo Finance RSS', fn: () => getYahooFinanceNews(ticker, language), timeout: 5000, priority: 1 },
-            { name: 'BBC RSS News', fn: () => getSimpleRSSNews(smartQuery, language), timeout: 4000, priority: 2 },
-            { name: 'Alpha Vantage (RSS Fallback)', fn: () => getAlphaVantageNews(ticker, language), timeout: 3000, priority: 3 },
-            { name: 'Public News (RSS Fallback)', fn: () => getPublicNewsAPI(smartQuery, language), timeout: 2000, priority: 4 },
+            { name: 'Enhanced Yahoo Finance RSS', fn: () => getYahooFinanceNews(ticker, language), timeout: 6000, priority: 1 },
+            { name: 'Enhanced Financial RSS (MarketWatch/Seeking Alpha)', fn: () => getAlphaVantageNews(ticker, language), timeout: 5000, priority: 2 },
+            { name: 'Enhanced Multi-RSS (BBC/Reuters/CNN)', fn: () => getPublicNewsAPI(smartQuery, language), timeout: 5000, priority: 3 },
+            { name: 'BBC Business RSS', fn: () => getSimpleRSSNews(smartQuery, language), timeout: 4000, priority: 4 },
         ] : [
-            { name: 'Yahoo Finance Korea RSS', fn: () => getYahooFinanceNews(ticker, language), timeout: 5000, priority: 1 },
-            { name: 'BBC RSS News', fn: () => getSimpleRSSNews(smartQuery, language), timeout: 4000, priority: 2 },
-            { name: 'Alpha Vantage (RSS Fallback)', fn: () => getAlphaVantageNews(ticker, language), timeout: 3000, priority: 3 },
-            { name: 'Public News (RSS Fallback)', fn: () => getPublicNewsAPI(smartQuery, language), timeout: 2000, priority: 4 },
+            { name: 'Enhanced Yahoo Finance Korea RSS', fn: () => getYahooFinanceNews(ticker, language), timeout: 6000, priority: 1 },
+            { name: 'Enhanced Multi-RSS (BBC/Reuters/CNN)', fn: () => getPublicNewsAPI(smartQuery, language), timeout: 5000, priority: 2 },
+            { name: 'Enhanced Financial RSS (MarketWatch/Seeking Alpha)', fn: () => getAlphaVantageNews(ticker, language), timeout: 5000, priority: 3 },
+            { name: 'BBC Business RSS', fn: () => getSimpleRSSNews(smartQuery, language), timeout: 4000, priority: 4 },
         ];
 
         // 🎯 제미나이 뉴스가 충분하면 외부 소스 호출 최소화
@@ -6721,10 +6721,108 @@ async function getNewsAPIHeadlines(query: string, language: string): Promise<New
 }
 
 async function getAlphaVantageNews(query: string, language: string): Promise<NewsArticle[]> {
-    console.log(`[Alpha Vantage News] 스킵 - 데모 키 제한으로 인해 대체 소스 사용`);
-    
-    // 데모 키 제한 때문에 기존 RSS 소스 활용
-    return getSimpleRSSNews(query, language);
+    console.log(`[Enhanced Financial RSS] 금융 전문 뉴스 소스에서 "${query}" 뉴스 수집`);
+
+    try {
+        // 🚀 API 키 의존성 제거 - 금융 전문 RSS 소스 활용
+        const financialRSSFeeds = [
+            {
+                name: 'MarketWatch',
+                url: 'https://feeds.marketwatch.com/marketwatch/topstories/',
+                priority: 1
+            },
+            {
+                name: 'Yahoo Finance',
+                url: 'https://finance.yahoo.com/rss/',
+                priority: 2
+            },
+            {
+                name: 'Seeking Alpha',
+                url: 'https://seekingalpha.com/feed.xml',
+                priority: 3
+            },
+            {
+                name: 'Financial Times',
+                url: 'https://www.ft.com/rss/home',
+                priority: 4
+            }
+        ];
+
+        const allFinancialNews: NewsArticle[] = [];
+
+        // 각 금융 RSS 피드에서 뉴스 수집
+        for (const feed of financialRSSFeeds) {
+            try {
+                console.log(`[Enhanced Financial RSS] ${feed.name}에서 금융 뉴스 수집 중...`);
+                
+                const rssResponse = await fetch(feed.url, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'application/rss+xml, application/xml, text/xml'
+                    },
+                    signal: AbortSignal.timeout(5000)
+                });
+
+                if (rssResponse.ok) {
+                    const rssText = await rssResponse.text();
+                    
+                    // 간단한 XML 파싱으로 제목과 링크 추출
+                    const items = rssText.match(/<item[^>]*>[\s\S]*?<\/item>/g) || [];
+
+                    for (let i = 0; i < Math.min(items.length, 4); i++) {
+                        const item = items[i];
+
+                        const titleMatch = item.match(/<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/);
+                        const linkMatch = item.match(/<link>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/link>/);
+                        const descMatch = item.match(/<description>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/description>/);
+
+                        if (titleMatch && linkMatch) {
+                            const title = titleMatch[1].replace(/<[^>]*>/g, '').trim();
+                            const url = linkMatch[1].trim();
+                            const description = descMatch 
+                                ? descMatch[1].replace(/<[^>]*>/g, '').substring(0, 300).trim() 
+                                : title;
+
+                            // 키워드 관련성 체크 (더 관대하게)
+                            const isRelevant = title.toLowerCase().includes(query.toLowerCase()) ||
+                                              (description && description.toLowerCase().includes(query.toLowerCase())) ||
+                                              ['stock', 'market', 'trading', 'finance', 'investment', 'earnings', 'analyst'].some(keyword =>
+                                                  title.toLowerCase().includes(keyword) || 
+                                                  (description && description.toLowerCase().includes(keyword))
+                                              );
+
+                            if (isRelevant || i < 2) { // 처음 2개는 항상 포함
+                                allFinancialNews.push({
+                                    title,
+                                    url,
+                                    publishedAt: new Date().toISOString(),
+                                    source: feed.name,
+                                    summary: description,
+                                    content: description,
+                                    category: 'business',
+                                    isGeminiGenerated: false
+                                });
+                            }
+                        }
+                    }
+                }
+            } catch (feedError) {
+                console.warn(`[Enhanced Financial RSS] ${feed.name} 실패:`, feedError);
+                continue;
+            }
+        }
+
+        if (allFinancialNews.length > 0) {
+            console.log(`[Enhanced Financial RSS] ✅ 총 ${allFinancialNews.length}개 금융 뉴스 수집 완료`);
+            return allFinancialNews.slice(0, 20); // 최대 20개 뉴스 반환
+        }
+
+        return []; // 빈 배열 반환하여 다음 소스로 넘어가기
+
+    } catch (error) {
+        console.warn(`[Enhanced Financial RSS] 금융 뉴스 수집 실패 for "${query}":`, error);
+        return []; // 에러 시에도 빈 배열 반환
+    }
 }
 
 async function getYahooFinanceNews(query: string, language: string): Promise<NewsArticle[]> {
@@ -6752,7 +6850,8 @@ async function getYahooFinanceNews(query: string, language: string): Promise<New
         const items = xmlText.match(/<item[^>]*>[\s\S]*?<\/item>/g) || [];
         const articles: NewsArticle[] = [];
 
-        for (let i = 0; i < Math.min(items.length, 5); i++) {
+        // 🚀 더 많은 뉴스 수집 (5개 → 12개)
+        for (let i = 0; i < Math.min(items.length, 12); i++) {
             const item = items[i];
 
             const titleMatch = item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/) ||
@@ -6765,7 +6864,7 @@ async function getYahooFinanceNews(query: string, language: string): Promise<New
             if (titleMatch && linkMatch) {
                 const title = titleMatch[1];
                 const url = linkMatch[1];
-                const description = descMatch ? descMatch[1].replace(/<[^>]*>/g, '').substring(0, 200) : title;
+                const description = descMatch ? descMatch[1].replace(/<[^>]*>/g, '').substring(0, 300) : title;
 
                 articles.push({
                     title: title,
@@ -6801,10 +6900,124 @@ async function getYahooFinanceNews(query: string, language: string): Promise<New
 }
 
 async function getPublicNewsAPI(query: string, language: string): Promise<NewsArticle[]> {
-    console.log(`[Public News API] 스킵 - 대신 다중 RSS 소스 사용`);
-    
-    // API 키 의존성 제거하고 RSS 기반 뉴스로 대체
-    return getSimpleRSSNews(query, language);
+    console.log(`[Enhanced RSS News] 다중 RSS 소스에서 뉴스 수집: "${query}"`);
+
+    try {
+        // 🚀 API 키 의존성 제거 - 다중 RSS 소스 활용
+        const rssFeeds = [
+            {
+                name: 'BBC Business',
+                url: 'https://feeds.bbci.co.uk/news/business/rss.xml',
+                priority: 1
+            },
+            {
+                name: 'Reuters Business',  
+                url: 'https://www.reuters.com/business/',
+                priority: 2
+            },
+            {
+                name: 'CNN Business',
+                url: 'http://rss.cnn.com/rss/money_latest.rss',
+                priority: 3
+            },
+            {
+                name: 'MarketWatch',
+                url: 'https://feeds.marketwatch.com/marketwatch/topstories/',
+                priority: 4
+            }
+        ];
+
+        const allArticles: NewsArticle[] = [];
+
+        // 각 RSS 피드에서 뉴스 수집
+        for (const feed of rssFeeds) {
+            try {
+                console.log(`[Enhanced RSS] ${feed.name}에서 뉴스 수집 중...`);
+                
+                const rssResponse = await fetch(feed.url, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'application/rss+xml, application/xml, text/xml'
+                    },
+                    signal: AbortSignal.timeout(4000)
+                });
+
+                if (rssResponse.ok) {
+                    const rssText = await rssResponse.text();
+                    
+                    // 간단한 XML 파싱으로 제목과 링크 추출 (기존 방식 활용)
+                    const items = rssText.match(/<item[^>]*>[\s\S]*?<\/item>/g) || [];
+                    const rssArticles: NewsArticle[] = [];
+
+                    for (let i = 0; i < Math.min(items.length, 5); i++) {
+                        const item = items[i];
+
+                        const titleMatch = item.match(/<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/);
+                        const linkMatch = item.match(/<link>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/link>/);
+                        const descMatch = item.match(/<description>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/description>/);
+
+                        if (titleMatch && linkMatch) {
+                            const title = titleMatch[1].replace(/<[^>]*>/g, '').trim();
+                            const url = linkMatch[1].trim();
+                            const description = descMatch 
+                                ? descMatch[1].replace(/<[^>]*>/g, '').substring(0, 200).trim() 
+                                : title;
+
+                            rssArticles.push({
+                                title,
+                                url,
+                                publishedAt: new Date().toISOString(),
+                                source: feed.name,
+                                summary: description,
+                                content: description,
+                                category: 'business',
+                                isGeminiGenerated: false
+                            });
+                        }
+                    }
+                    
+                    // 키워드와 관련된 뉴스만 필터링
+                    const relevantArticles = rssArticles.filter((article: NewsArticle) => 
+                        article.title.toLowerCase().includes(query.toLowerCase()) ||
+                        (article.summary && article.summary.toLowerCase().includes(query.toLowerCase())) ||
+                        // 일반적인 금융/비즈니스 키워드도 포함
+                        ['stock', 'market', 'business', 'finance', 'earnings', 'investment'].some(keyword =>
+                            article.title.toLowerCase().includes(keyword)
+                        )
+                    );
+
+                    if (relevantArticles.length > 0) {
+                        console.log(`[Enhanced RSS] ${feed.name}에서 ${relevantArticles.length}개 관련 뉴스 발견`);
+                        allArticles.push(...relevantArticles.slice(0, 3)); // 각 소스에서 최대 3개씩
+                    }
+                }
+            } catch (feedError) {
+                console.warn(`[Enhanced RSS] ${feed.name} 실패:`, feedError);
+                continue;
+            }
+        }
+
+        if (allArticles.length > 0) {
+            console.log(`[Enhanced RSS] ✅ 총 ${allArticles.length}개 뉴스 수집 완료`);
+            return allArticles.slice(0, 15); // 최대 15개 뉴스 반환
+        }
+
+        // 폴백: 일반 비즈니스 뉴스
+        return [{
+            title: `${query} 관련 최신 비즈니스 뉴스`,
+            url: `https://www.google.com/search?q=${encodeURIComponent(query)}+news`,
+            publishedAt: new Date().toISOString(),
+            source: 'Business News',
+            summary: `${query}에 대한 최신 비즈니스 뉴스와 시장 동향을 확인하세요.`,
+            content: `${query} 관련 최신 뉴스를 다양한 소스에서 확인할 수 있습니다.`,
+            category: 'business',
+            isGeminiGenerated: false
+        }];
+
+    } catch (error) {
+        console.warn(`[Enhanced RSS] 뉴스 수집 실패 for "${query}":`, error);
+        return [];
+    }
 }
 
 // 🛡️ 심플 RSS 뉴스 피드 (Guardian 대신 안정적인 무료 뉴스)
@@ -6839,7 +7052,8 @@ async function getSimpleRSSNews(query: string, language: string): Promise<NewsAr
         const items = xmlText.match(/<item[^>]*>[\s\S]*?<\/item>/g) || [];
         const articles: NewsArticle[] = [];
 
-        for (let i = 0; i < Math.min(items.length, 3); i++) {
+        // 🚀 더 많은 뉴스 수집 (3개 → 8개)
+        for (let i = 0; i < Math.min(items.length, 8); i++) {
             const item = items[i];
 
             const titleMatch = item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/);
@@ -6849,16 +7063,18 @@ async function getSimpleRSSNews(query: string, language: string): Promise<NewsAr
             if (titleMatch && linkMatch) {
                 const title = titleMatch[1];
                 const url = linkMatch[1];
-                const description = descMatch ? descMatch[1].substring(0, 200) : title;
+                const description = descMatch ? descMatch[1].substring(0, 250) : title;
 
-                // 검색 쿼리와 관련성이 있는지 간단히 체크
+                // 검색 쿼리와 관련성이 있는지 간단히 체크 (더 관대하게)
                 const relevantKeywords = query.split(' ').slice(0, 3);
                 const isRelevant = relevantKeywords.some(keyword =>
                     title.toLowerCase().includes(keyword.toLowerCase()) ||
                     description.toLowerCase().includes(keyword.toLowerCase())
+                ) || ['stock', 'market', 'business', 'finance', 'trading', 'investment'].some(keyword =>
+                    title.toLowerCase().includes(keyword) || description.toLowerCase().includes(keyword)
                 );
 
-                if (isRelevant || i < 2) { // 처음 2개는 항상 포함, 나머지는 관련성 체크
+                if (isRelevant || i < 3) { // 처음 3개는 항상 포함, 나머지는 관련성 체크
                     articles.push({
                         title: title,
                         url: url,
@@ -6935,8 +7151,8 @@ async function findLatestGitBookDate(): Promise<string> {
         }
 
         // 마크다운 URL 우선 시도
-        const markdownUrl = `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/undefined.md`;
-        const fallbackUrl = `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/undefined`;
+        const markdownUrl = `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/bloomberg.md`;
+        const fallbackUrl = `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/bloomberg`;
 
         console.log(`[GitBook] 📅 평일 날짜 확인 중: ${dateString}`);
         console.log(`[GitBook] 🎯 마크다운 URL 우선 시도: ${markdownUrl}`);
@@ -7013,7 +7229,7 @@ async function checkForNextDayNews(): Promise<{ hasNew: boolean; newDate?: strin
 
         // 3. 다음날 뉴스 링크 존재 여부 확인 (여러 패턴 테스트)
         const testUrls = [
-            `https://futuresnow.gitbook.io/newstoday/${nextDateString}/news/today/undefined`,
+            `https://futuresnow.gitbook.io/newstoday/${nextDateString}/news/today/bloomberg`,
             `https://futuresnow.gitbook.io/newstoday/${nextDateString}/greeting/preview`,
             `https://futuresnow.gitbook.io/newstoday/${nextDateString}`
         ];
@@ -8355,13 +8571,13 @@ async function findLatestValidGitBookDate(): Promise<string | null> {
 
             // 마크다운 URL 우선 시도
             const markdownUrls = [
-                `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/undefined.md`,
+                `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/bloomberg.md`,
                 `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/undefined.md`
             ];
 
             // HTML 폴백 URL
             const htmlUrls = [
-                `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/undefined`,
+                `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/bloomberg`,
                 `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/undefined`,
                 `https://futuresnow.gitbook.io/newstoday/${dateString}/greeting/preview`
             ];
