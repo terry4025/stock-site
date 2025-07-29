@@ -137,8 +137,8 @@ function extractTextFromNode(node: Node): string {
   return '';
 }
 
-// 테이블 행에서 일정 데이터 추출
-function parseScheduleRow(row: Element, baseUrl: string): ScheduleItem | null {
+// 테이블 행에서 일정 데이터 추출 (스마트 날짜 처리 포함)
+function parseScheduleRowWithDateMemory(row: Element, baseUrl: string, lastValidDate: string = ''): ScheduleItem | null {
   try {
     const cells = row.querySelectorAll('td');
     if (cells.length < 5) return null;
@@ -150,18 +150,23 @@ function parseScheduleRow(row: Element, baseUrl: string): ScheduleItem | null {
     const indicator = extractTextFromNode(cells[3]).trim();
     const importanceText = extractTextFromNode(cells[4]).trim();
 
-    // 유효성 검사
-    if (!date || !time || !country || !indicator) {
+    // 지표명만 필수로 검증 (관대한 버전)
+    if (!indicator || indicator.trim() === '') {
       return null;
     }
+
+    // 빈 필드들에 스마트 기본값 설정
+    const validDate = date && date.trim() !== '' ? date : (lastValidDate || '(날짜 미정)');
+    const validTime = time && time.trim() !== '' ? time : '(시간 미정)';
+    const validCountry = country && country.trim() !== '' ? country : '미국';
 
     // 중요도 파싱
     const importance = parseImportance(importanceText);
 
     return {
-      date: decodeHtmlEntities(date),
-      time: decodeHtmlEntities(time),
-      country: decodeHtmlEntities(country),
+      date: decodeHtmlEntities(validDate),
+      time: decodeHtmlEntities(validTime),
+      country: decodeHtmlEntities(validCountry),
       indicator: decodeHtmlEntities(indicator),
       importance,
       source: '오선 (Osen)',
@@ -174,6 +179,11 @@ function parseScheduleRow(row: Element, baseUrl: string): ScheduleItem | null {
     console.error('일정 행 파싱 오류:', error);
     return null;
   }
+}
+
+// 기존 parseScheduleRow 함수도 유지 (다른 곳에서 사용될 수 있음)
+function parseScheduleRow(row: Element, baseUrl: string): ScheduleItem | null {
+  return parseScheduleRowWithDateMemory(row, baseUrl, '');
 }
 
 // 마크다운 기반 파싱 로직 - 개선된 버전
@@ -310,8 +320,8 @@ function parseScheduleRowFromDivs(cells: NodeListOf<Element>, baseUrl: string): 
     const indicator = extractTextFromNode(cells[3]).trim();
     const importanceText = extractTextFromNode(cells[4]).trim();
 
-    // 유효성 검사
-    if (!date || !time || !country || !indicator) {
+    // 지표명만 필수로 검증 (관대한 버전)
+    if (!indicator || indicator.trim() === '') {
       return null;
     }
 
@@ -320,13 +330,18 @@ function parseScheduleRowFromDivs(cells: NodeListOf<Element>, baseUrl: string): 
       return null;
     }
 
+    // 빈 필드들에 기본값 설정 (이전 코드 방식)
+    const validDate = date && date.trim() !== '' ? date : '(날짜 미정)';
+    const validTime = time && time.trim() !== '' ? time : '(시간 미정)';
+    const validCountry = country && country.trim() !== '' ? country : '미국';
+
     // 중요도 파싱
     const importance = parseImportance(importanceText);
 
     return {
-      date: decodeHtmlEntities(date),
-      time: decodeHtmlEntities(time),
-      country: decodeHtmlEntities(country),
+      date: decodeHtmlEntities(validDate),
+      time: decodeHtmlEntities(validTime),
+      country: decodeHtmlEntities(validCountry),
       indicator: decodeHtmlEntities(indicator),
       importance,
       source: '오선 (Osen)',
@@ -353,8 +368,8 @@ function parseScheduleRowFromGenericDivs(cells: NodeListOf<Element>, baseUrl: st
     const indicator = extractTextFromNode(cells[3]).trim();
     const importanceText = extractTextFromNode(cells[4]).trim();
 
-    // 유효성 검사
-    if (!date || !time || !country || !indicator) {
+    // 지표명만 필수로 검증 (관대한 버전)
+    if (!indicator || indicator.trim() === '') {
       return null;
     }
 
@@ -363,13 +378,18 @@ function parseScheduleRowFromGenericDivs(cells: NodeListOf<Element>, baseUrl: st
       return null;
     }
 
+    // 빈 필드들에 기본값 설정 (이전 코드 방식)
+    const validDate = date && date.trim() !== '' ? date : '(날짜 미정)';
+    const validTime = time && time.trim() !== '' ? time : '(시간 미정)';
+    const validCountry = country && country.trim() !== '' ? country : '미국';
+
     // 중요도 파싱
     const importance = parseImportance(importanceText);
 
     return {
-      date: decodeHtmlEntities(date),
-      time: decodeHtmlEntities(time),
-      country: decodeHtmlEntities(country),
+      date: decodeHtmlEntities(validDate),
+      time: decodeHtmlEntities(validTime),
+      country: decodeHtmlEntities(validCountry),
       indicator: decodeHtmlEntities(indicator),
       importance,
       source: '오선 (Osen)',
@@ -562,7 +582,7 @@ function parseMarkdownSchedule(content: string, baseUrl: string): ScheduleItem[]
   return scheduleItems;
 }
 
-// HTML 테이블 파싱 함수
+// HTML 테이블 파싱 함수 (스마트 날짜 처리 포함)
 function parseHtmlSchedule(content: string, baseUrl: string): ScheduleItem[] {
   const scheduleItems: ScheduleItem[] = [];
   
@@ -575,6 +595,8 @@ function parseHtmlSchedule(content: string, baseUrl: string): ScheduleItem[] {
     const allTables = document.querySelectorAll('table');
     console.log(`[HTML Parser] ${allTables.length}개 테이블 발견`);
     
+    let lastValidDate = ''; // 마지막 유효한 날짜 기억
+    
     allTables.forEach((table, tableIndex) => {
       const rows = table.querySelectorAll('tr');
       console.log(`[HTML Parser] 테이블 ${tableIndex + 1}에서 ${rows.length}개 행 발견`);
@@ -583,9 +605,15 @@ function parseHtmlSchedule(content: string, baseUrl: string): ScheduleItem[] {
         // 첫 번째 행은 헤더일 가능성이 높으므로 건너뛰기
         if (rowIndex === 0) return;
         
-        const scheduleItem = parseScheduleRow(row, baseUrl);
+        const scheduleItem = parseScheduleRowWithDateMemory(row, baseUrl, lastValidDate);
         if (scheduleItem && isValidScheduleItem(scheduleItem)) {
           scheduleItems.push(scheduleItem);
+          
+          // 유효한 날짜가 있으면 기억하기 (빈 날짜가 아닌 경우)
+          if (scheduleItem.date && scheduleItem.date !== '(날짜 미정)' && !scheduleItem.date.includes('(잠정)')) {
+            lastValidDate = scheduleItem.date;
+          }
+          
           console.log(`[HTML Parser] ✅ 유효한 항목 추가: ${scheduleItem.date} ${scheduleItem.time} ${scheduleItem.country} - ${scheduleItem.indicator}`);
         }
       });
