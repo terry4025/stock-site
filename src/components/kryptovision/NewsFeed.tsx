@@ -53,6 +53,28 @@ const NewsItem = ({ article, locale, onClick }: { article: NewsArticle; locale: 
   </button>
 );
 
+// 🚀 동적 오선 GitBook URL 계산 함수 (새로운 구조: greeting/preview)
+const calculateLatestOsenUrl = (): string => {
+  const today = new Date();
+  let checkDate = new Date(today);
+  // 현재 시간에서 가장 가능성 높은 평일 날짜 찾기
+  for (let i = 0; i <= 7; i++) {
+    const dayOfWeek = checkDate.getDay();
+    // 평일인지 확인 (월요일=1 ~ 금요일=5)
+    if (dayOfWeek >= 1 && dayOfWeek <= 5) {
+      const dateString = checkDate.toISOString().split('T')[0]; // YYYY-MM-DD 형식
+      const gitBookUrl = `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/bloomberg`;
+      console.log(`[오선 URL] 💡 새로운 구조로 최신 평일 날짜 계산: ${dateString} → ${gitBookUrl}`);
+      return gitBookUrl;
+    }
+    // 하루씩 뒤로 이동
+    checkDate.setDate(checkDate.getDate() - 1);
+  }
+  // 폴백: 기본 GitBook 페이지
+  console.log('[오선 URL] ⚠️ 폴백 URL 사용');
+  return 'https://futuresnow.gitbook.io/newstoday/';
+};
+
 export default function NewsFeed({ news, marketNews, loading, stockData }: NewsFeedProps) {
   const { t, language } = useLanguage();
   const locale = language === 'kr' ? ko : enUS;
@@ -102,32 +124,85 @@ export default function NewsFeed({ news, marketNews, loading, stockData }: NewsF
     }
   };
 
-  // 🚀 동적 오선 GitBook URL 계산 함수 (새로운 구조: greeting/preview)
-  const calculateLatestOsenUrl = (): string => {
-    const today = new Date();
-    let checkDate = new Date(today);
-    
-    // 현재 시간에서 가장 가능성 높은 평일 날짜 찾기
-    for (let i = 0; i <= 7; i++) {
-      const dayOfWeek = checkDate.getDay();
+  // 🚀 동적 오선 GitBook URL 계산 및 검증 (페이지 첫 로드 시 1회만 실행)
+  useEffect(() => {
+    const updateOsenUrlWithVerification = async () => {
+      const now = Date.now();
+      const oneHour = 60 * 60 * 1000; // 1시간 = 60분 * 60초 * 1000ms
       
-      // 평일인지 확인 (월요일=1 ~ 금요일=5)
-      if (dayOfWeek >= 1 && dayOfWeek <= 5) {
-        const dateString = checkDate.toISOString().split('T')[0]; // YYYY-MM-DD 형식
-        const gitBookUrl = `https://futuresnow.gitbook.io/newstoday/${dateString}/greeting/preview`;
+      // 처음 로드이거나 1시간이 지났으면 URL 업데이트 시도
+      if (newsState.lastUrlUpdate === 0 || now - newsState.lastUrlUpdate > oneHour) {
+        console.log('[오선 URL] 🚀 스마트한 URL 업데이트 시작...');
         
-        console.log(`[오선 URL] 💡 새로운 구조로 최신 평일 날짜 계산: ${dateString} → ${gitBookUrl}`);
-        return gitBookUrl;
+        let newUrl = '';
+        let isNewUrlValid = false;
+        
+        // 1단계: 서버에서 최신 URL 가져오기 시도
+        try {
+          console.log('[오선 URL] 🔍 1단계: 서버에서 최신 URL 가져오는 중...');
+          const { url, date, success } = await getLatestOsenGitBookUrl();
+          newUrl = url;
+          
+          console.log(`[오선 URL] 📅 서버에서 제안한 URL: ${date} → ${url} (서버 성공: ${success})`);
+          
+        } catch (error) {
+          console.warn('[오선 URL] ⚠️ 서버 요청 실패, 클라이언트 계산으로 진행:', error);
+          newUrl = calculateLatestOsenUrl();
+          console.log(`[오선 URL] 🔧 클라이언트 계산 URL: ${newUrl}`);
+        }
+        
+        // 2단계: 새로운 URL 접근 가능 여부 검증
+        if (newUrl && newUrl !== newsState.lastValidOsenUrl) {
+          console.log('[오선 URL] 🔍 2단계: 새로운 URL 접근 가능성 검증...');
+          isNewUrlValid = await verifyUrlAccess(newUrl);
+          
+          if (isNewUrlValid) {
+            // ✅ 새로운 URL이 작동함 - 업데이트
+            console.log(`[오선 URL] ✅ 새로운 URL 검증 성공! 업데이트 진행: ${newUrl}`);
+            
+            setNewsState(prev => ({
+              ...prev,
+              latestOsenUrl: newUrl,
+              lastValidOsenUrl: newUrl, // 💾 검증된 URL로 저장
+              lastUrlUpdate: now
+            }));
+            
+          } else {
+            // ❌ 새로운 URL이 작동하지 않음 - 이전 검증된 URL 유지
+            console.warn(`[오선 URL] ❌ 새로운 URL 접근 불가! 이전 검증된 URL 유지: ${newsState.lastValidOsenUrl}`);
+            
+            setNewsState(prev => ({
+              ...prev,
+              latestOsenUrl: prev.lastValidOsenUrl, // 🔄 이전 검증된 URL로 롤백
+              lastUrlUpdate: now // 시간은 업데이트 (재시도 방지)
+            }));
+          }
+          
+        } else if (newUrl === newsState.lastValidOsenUrl) {
+          // 📋 동일한 URL이므로 검증 생략
+          console.log(`[오선 URL] 📋 동일한 URL이므로 검증 생략: ${newUrl}`);
+          
+          setNewsState(prev => ({
+            ...prev,
+            lastUrlUpdate: now
+          }));
+          
+        } else {
+          // 🆘 새로운 URL을 가져오지 못함 - 현재 검증된 URL 유지
+          console.warn('[오선 URL] 🆘 새로운 URL을 가져오지 못함, 현재 URL 유지');
+          
+          setNewsState(prev => ({
+            ...prev,
+            lastUrlUpdate: now
+          }));
+        }
+        
+        console.log(`[오선 URL] 🏁 업데이트 완료: ${newsState.latestOsenUrl}`);
       }
-      
-      // 하루씩 뒤로 이동
-      checkDate.setDate(checkDate.getDate() - 1);
-    }
-    
-    // 폴백: 기본 GitBook 페이지
-    console.log('[오선 URL] ⚠️ 폴백 URL 사용');
-    return 'https://futuresnow.gitbook.io/newstoday/';
-  };
+    };
+    // 페이지 첫 로드 시 1회만 실행
+    updateOsenUrlWithVerification();
+  }, []); // 빈 배열로 첫 로드 1회만
 
   // 🔄 수동 뉴스 업데이트 체크 함수
   const handleManualNewsCheck = async () => {
@@ -280,14 +355,6 @@ export default function NewsFeed({ news, marketNews, loading, stockData }: NewsF
     
     // 초기 URL 설정 및 검증
     updateOsenUrlWithVerification();
-    
-    // 매 시간마다 스마트 URL 업데이트 (60분 = 3,600,000ms)
-    const urlUpdateInterval = setInterval(updateOsenUrlWithVerification, 60 * 60 * 1000);
-    
-    // 컴포넌트 언마운트 시 인터벌 정리
-    return () => {
-      clearInterval(urlUpdateInterval);
-    };
   }, []); // 빈 의존성 배열로 한 번만 실행
 
   // 🔄 수동 URL 체크 및 갱신 (검증 포함)
@@ -553,7 +620,7 @@ export default function NewsFeed({ news, marketNews, loading, stockData }: NewsF
     return articles.filter(article => classifyNewsRegion(article) === filter);
   };
 
-  // 📊 뉴스 품질별 정렬 (고품질 뉴스 우선)
+  // 📊 뉴스 품질별 정렬 (헤드라인 뉴스 우선, 고품질 뉴스 우선)
   const sortNewsByQuality = (articles: NewsArticle[]): NewsArticle[] => {
     return articles.sort((a, b) => {
       // 품질 점수 계산 함수
@@ -562,8 +629,11 @@ export default function NewsFeed({ news, marketNews, loading, stockData }: NewsF
         const title = article.title.toLowerCase();
         const source = article.source.toLowerCase();
         
+        // 🔥 헤드라인 뉴스에 최고 우선순위 점수
+        if (article.category === 'headline') score += 100;
+        
         // 신뢰할 수 있는 소스에 가산점
-        const trustedSources = ['reuters', 'bloomberg', 'cnbc', 'wall street journal', 'financial times', '연합뉴스', '머니투데이', '이데일리'];
+        const trustedSources = ['reuters', 'bloomberg', 'cnbc', 'wall street journal', 'financial times', '연합뉴스', '머니투데이', '이데일리', '오선', 'osen'];
         if (trustedSources.some(trusted => source.includes(trusted))) score += 10;
         
         // 실시간/속보 뉴스에 가산점
@@ -646,23 +716,41 @@ export default function NewsFeed({ news, marketNews, loading, stockData }: NewsF
                         article.source.toLowerCase().includes('gemini') ||
                         article.source.toLowerCase().includes('google search');
     
+    // 📰 헤드라인 뉴스 구분
+    const isHeadline = article.category === 'headline';
+    
     // 헤드라인과 세부 내용 정리
     const cleanTitle = cleanText(article.title);
     const cleanSummary = article.summary ? cleanText(article.summary) : '';
     const cleanContent = article.content ? cleanText(article.content) : '';
     
-    // 세부 내용 우선순위: summary > content
-    const detailContent = cleanSummary || cleanContent;
+    // 세부 내용 우선순위: summary > content (헤드라인 뉴스는 짧게 표시)
+    const detailContent = isHeadline ? 
+      (cleanSummary.length > 50 ? cleanSummary.substring(0, 50) + '...' : cleanSummary) :
+      (cleanSummary || cleanContent);
     
     return (
-      <div className="p-3 border-b border-gray-100 dark:border-gray-800 last:border-b-0">
+      <div className={`p-3 border-b border-gray-100 dark:border-gray-800 last:border-b-0 ${
+        isHeadline ? 'bg-gradient-to-r from-blue-50 to-purple-50 dark:from-blue-950/20 dark:to-purple-950/20' : ''
+      }`}>
         <div className="flex flex-col space-y-2">
-          <h4 className="text-sm font-medium leading-tight line-clamp-2 hover:text-primary transition-colors">
-            {cleanTitle}
-          </h4>
+          <div className="flex items-start gap-2">
+            {/* 헤드라인 뉴스 아이콘 */}
+            {isHeadline && (
+              <span className="text-xs bg-blue-500 text-white px-1.5 py-0.5 rounded-full font-semibold mt-0.5 flex-shrink-0">
+                📰
+              </span>
+            )}
+            
+            <h4 className={`text-sm font-medium leading-tight line-clamp-2 hover:text-primary transition-colors ${
+              isHeadline ? 'text-blue-800 dark:text-blue-300' : ''
+            }`}>
+              {cleanTitle}
+            </h4>
+          </div>
           
-          {detailContent && (
-            <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-3">
+          {detailContent && !isHeadline && (
+            <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-3 ml-6">
               {detailContent}
             </p>
           )}
@@ -671,10 +759,12 @@ export default function NewsFeed({ news, marketNews, loading, stockData }: NewsF
         <div className="flex items-center justify-between mt-2">
           <div className="flex items-center gap-2">
             <Badge variant="outline" className={`text-xs ${
-              isGeminiNews ? 'border-blue-400 text-blue-600 dark:text-blue-400' : ''
+              isGeminiNews ? 'border-blue-400 text-blue-600 dark:text-blue-400' :
+              isHeadline ? 'border-blue-500 text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/30' : ''
             }`}>
               {article.source}
               {isGeminiNews && <span className="ml-1">⚡</span>}
+              {isHeadline && <span className="ml-1">📰</span>}
             </Badge>
             <span className="text-xs text-gray-500">
               {new Date(article.publishedAt).toLocaleDateString(language === 'kr' ? 'ko-KR' : 'en-US')}
@@ -693,7 +783,7 @@ export default function NewsFeed({ news, marketNews, loading, stockData }: NewsF
               }
             }}
             disabled={!article.url || article.url === '#'}
-            title={isGeminiNews ? "실시간 검색 결과 보기" : "원본 기사 보기"}
+            title={isHeadline ? "헤드라인 상세보기" : isGeminiNews ? "실시간 검색 결과 보기" : "원본 기사 보기"}
           >
             <ExternalLink className="h-3 w-3" />
           </Button>

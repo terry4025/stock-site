@@ -9,7 +9,7 @@ import { ExternalLink, Globe, MapPin, Filter, Play } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Skeleton } from '@/components/ui/skeleton';
 import { NewsArticle, StockData } from '@/lib/types';
-import { getLatestOsenGitBookUrl, getCurrentActiveDate, manualCheckForNewNews } from '@/app/actions';
+// import { getLatestOsenGitBookUrl, manualCheckForNewNews } from '@/app/actions';
 import NewsSummaryModal from './NewsSummaryModal';
 
 interface NewsCardsProps {
@@ -35,8 +35,8 @@ export default function NewsCards({ news, marketNews, loading, stockData }: News
   const [newsState, setNewsState] = useState<NewsState>({
     marketNewsFilter: 'all',
     stockNewsFilter: 'all',
-    latestOsenUrl: 'https://futuresnow.gitbook.io/newstoday/2025-07-02/greeting/preview', // 🔥 동적 시스템 연동 - 최신 날짜
-    lastValidOsenUrl: 'https://futuresnow.gitbook.io/newstoday/2025-07-02/greeting/preview', // 🔥 동적 시스템 연동 - 최신 날짜
+    latestOsenUrl: 'https://futuresnow.gitbook.io/newstoday/2025-07-02/news/today/bloomberg', // 🔥 동적 시스템 연동 - 최신 날짜
+    lastValidOsenUrl: 'https://futuresnow.gitbook.io/newstoday/2025-07-02/news/today/bloomberg', // 🔥 동적 시스템 연동 - 최신 날짜
     lastUrlUpdate: 0
   });
 
@@ -60,6 +60,7 @@ export default function NewsCards({ news, marketNews, loading, stockData }: News
   };
 
   // 🔥 새로운 동적 시스템과 연동된 수동 URL 갱신 함수
+  /*
   const handleManualUrlUpdate = async () => {
     console.log('[오선 URL] 🔄 동적 시스템과 연동된 수동 URL 갱신 시작...');
     
@@ -71,7 +72,7 @@ export default function NewsCards({ news, marketNews, loading, stockData }: News
       if (checkResult.success) {
         if (checkResult.hasNew && checkResult.newDate) {
           // 새로운 뉴스 발견!
-          const newUrl = `https://futuresnow.gitbook.io/newstoday/${checkResult.newDate}/greeting/preview`;
+          const newUrl = `https://futuresnow.gitbook.io/newstoday/${checkResult.newDate}/news/today/bloomberg`;
           
           setNewsState(prev => ({
             ...prev,
@@ -88,7 +89,7 @@ export default function NewsCards({ news, marketNews, loading, stockData }: News
           const currentDate = await getCurrentActiveDate();
           
           if (currentDate) {
-            const currentUrl = `https://futuresnow.gitbook.io/newstoday/${currentDate}/greeting/preview`;
+            const currentUrl = `https://futuresnow.gitbook.io/newstoday/${currentDate}/news/today/bloomberg`;
             
             setNewsState(prev => ({
               ...prev,
@@ -114,8 +115,10 @@ export default function NewsCards({ news, marketNews, loading, stockData }: News
       alert('❌ URL 갱신 중 오류가 발생했습니다.');
     }
   };
+  */
 
   // 🔥 새로운 동적 시스템과 연동된 자동 URL 업데이트
+  /*
   useEffect(() => {
     const updateOsenUrlWithDynamicSystem = async () => {
       const now = Date.now();
@@ -129,7 +132,7 @@ export default function NewsCards({ news, marketNews, loading, stockData }: News
           const currentDate = await getCurrentActiveDate();
           
           if (currentDate) {
-            const currentUrl = `https://futuresnow.gitbook.io/newstoday/${currentDate}/greeting/preview`;
+            const currentUrl = `https://futuresnow.gitbook.io/newstoday/${currentDate}/news/today/bloomberg`;
             
             // URL 검증
             const verificationResult = await verifyUrlAccess(currentUrl);
@@ -180,6 +183,7 @@ export default function NewsCards({ news, marketNews, loading, stockData }: News
 
     updateOsenUrlWithDynamicSystem();
   }, []);
+  */
 
   const handleNewsItemClick = (article: NewsArticle, isStock: boolean) => {
     setSelectedArticle(article);
@@ -308,8 +312,8 @@ export default function NewsCards({ news, marketNews, loading, stockData }: News
       );
     }
     
-    // 뉴스 개수 제한
-    processedNews = processedNews.slice(0, 8);
+    // 뉴스 개수 제한 - 8개에서 15개로 증가
+    processedNews = processedNews.slice(0, 15);
     
     return processedNews;
   };
@@ -360,8 +364,6 @@ export default function NewsCards({ news, marketNews, loading, stockData }: News
       </div>
     );
   };
-
-
 
   if (loading) {
     return (
@@ -426,7 +428,7 @@ export default function NewsCards({ news, marketNews, loading, stockData }: News
               </Button>
             </div>
             
-            <div className="max-h-[300px] overflow-y-auto pr-2 news-scroll">
+            <div className="max-h-[400px] overflow-y-auto pr-2 news-scroll">
               {(() => {
                 const filteredStockNews = news ? processNews(news, newsState.stockNewsFilter, true) : [];
                 return filteredStockNews.length > 0 ? (
@@ -462,11 +464,11 @@ export default function NewsCards({ news, marketNews, loading, stockData }: News
                   onDoubleClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    handleManualUrlUpdate();
+                    // handleManualUrlUpdate();
                   }}
                   onContextMenu={(e) => {
                     e.preventDefault();
-                    handleManualUrlUpdate();
+                    // handleManualUrlUpdate();
                   }}
                   title="왼쪽 클릭: 오선 뉴스 페이지 열기 | 오른쪽 클릭/더블클릭: 새로운 뉴스 체크 (동적 시스템)"
                 >
@@ -523,7 +525,7 @@ export default function NewsCards({ news, marketNews, loading, stockData }: News
               </div>
             </div>
             
-            <div className="max-h-[300px] overflow-y-auto pr-2 news-scroll">
+            <div className="max-h-[400px] overflow-y-auto pr-2 news-scroll">
               {(() => {
                 const filteredMarketNews = marketNews ? processNews(marketNews, newsState.marketNewsFilter) : [];
                 return filteredMarketNews.length > 0 ? (

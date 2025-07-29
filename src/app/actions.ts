@@ -2,13 +2,13 @@
 import * as cheerio from 'cheerio';
 
 import type { NewsArticle, StockData, ChartDataPoint, MarketIndicator } from "@/lib/types";
-import { 
-    mockStockData, 
-    mockChartData, 
-    mockNewsData, 
-    mockMarketNewsData, 
-    mockAiAnalysis, 
-    mockNewsSentiment 
+import {
+    mockStockData,
+    mockChartData,
+    mockNewsData,
+    mockMarketNewsData,
+    mockAiAnalysis,
+    mockNewsSentiment
 } from "@/lib/mock-data";
 import { calculateDailyChange, validatePriceData } from "@/lib/utils";
 import { getFearGreedIndex } from "@/ai/flows/fear-greed-index";
@@ -18,143 +18,145 @@ import { getUserSystemPrompt, DEFAULT_SYSTEM_PROMPT, DEFAULT_SYSTEM_PROMPT_KR } 
 import { saveAnalysisRecord } from '@/lib/user-menu-helpers';
 import { analyzeNewsSentiment } from '@/ai/flows/news-sentiment-analysis';
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { parseGitBookNews, extractGitBookNews, filterWallStreetComments } from '@/ai/gitbookNewsExtractor';
+import { parseGitBookSchedule, extractGitBookSchedule, filterScheduleItems, getLatestScheduleUrl, generateScheduleTitle, generateLatestSourceUrl, type ScheduleItem } from '@/ai/gitbookScheduleExtractor';
 
 // 목표가 및 추천가격 계산 헬퍼 함수 (매수일 때만 목표가 제공)
 function calculatePriceTargets(stockData: StockData, recommendation: string, peRatio: number) {
-  const currentPrice = stockData.currentPrice;
-  const riskLevel = peRatio > 25 ? 'high' : peRatio < 15 ? 'low' : 'medium';
-  
-  // 매수 추천일 때만 투자 가이드 제공
-  if (recommendation === 'Buy') {
-    const volatility = Math.abs(stockData.dailyChange.percentage) / 100;
-    const riskAdjustment = peRatio > 25 ? 0.85 : peRatio < 15 ? 1.15 : 1.0;
-    
-    const shortTermTarget = currentPrice * (1.1 + volatility) * riskAdjustment;
-    const longTermTarget = currentPrice * (1.25 + volatility * 1.5) * riskAdjustment;
-    const buyPrice = currentPrice * 0.98; // 현재가 대비 2% 하락시 매수
-    const sellPrice = shortTermTarget * 0.95; // 단기 목표가 근처에서 매도
-    
+    const currentPrice = stockData.currentPrice;
+    const riskLevel = peRatio > 25 ? 'high' : peRatio < 15 ? 'low' : 'medium';
+
+    // 매수 추천일 때만 투자 가이드 제공
+    if (recommendation === 'Buy') {
+        const volatility = Math.abs(stockData.dailyChange.percentage) / 100;
+        const riskAdjustment = peRatio > 25 ? 0.85 : peRatio < 15 ? 1.15 : 1.0;
+
+        const shortTermTarget = currentPrice * (1.1 + volatility) * riskAdjustment;
+        const longTermTarget = currentPrice * (1.25 + volatility * 1.5) * riskAdjustment;
+        const buyPrice = currentPrice * 0.98; // 현재가 대비 2% 하락시 매수
+        const sellPrice = shortTermTarget * 0.95; // 단기 목표가 근처에서 매도
+
+        return {
+            shortTermTarget: Math.round(shortTermTarget * 100) / 100,
+            longTermTarget: Math.round(longTermTarget * 100) / 100,
+            buyPrice: Math.round(buyPrice * 100) / 100,
+            sellPrice: Math.round(sellPrice * 100) / 100,
+            riskLevel
+        };
+    }
+
+    // 매수가 아닐 때는 투자 가이드 없음 (위험도만 제공)
     return {
-      shortTermTarget: Math.round(shortTermTarget * 100) / 100,
-      longTermTarget: Math.round(longTermTarget * 100) / 100,
-      buyPrice: Math.round(buyPrice * 100) / 100,
-      sellPrice: Math.round(sellPrice * 100) / 100,
-      riskLevel
+        riskLevel
     };
-  }
-  
-  // 매수가 아닐 때는 투자 가이드 없음 (위험도만 제공)
-  return {
-    riskLevel
-  };
 }
 
-// 📊 기술적 분석 함수
+// 기술적 분석 함수
 function performTechnicalAnalysis(chartData: ChartDataPoint[]) {
-  if (!chartData || chartData.length < 20) {
+    if (!chartData || chartData.length < 20) {
+        return {
+            trend: 'insufficient_data',
+            rsi: null,
+            macd: null,
+            support: null,
+            resistance: null,
+            volume_trend: 'unknown'
+        };
+    }
+
+    const prices = chartData.map(d => d.close);
+    const volumes = chartData.map(d => d.volume || 0);
+
+    // Simple Moving Averages
+    const sma20 = prices.slice(-20).reduce((a, b) => a + b, 0) / 20;
+    const sma50 = prices.length >= 50 ? prices.slice(-50).reduce((a, b) => a + b, 0) / 50 : null;
+
+    // Price trend
+    const currentPrice = prices[prices.length - 1];
+    const priceChange5d = ((currentPrice - prices[prices.length - 6]) / prices[prices.length - 6]) * 100;
+    const priceChange20d = ((currentPrice - prices[prices.length - 21]) / prices[prices.length - 21]) * 100;
+
+    // RSI (simplified)
+    let gains = 0, losses = 0;
+    for (let i = prices.length - 14; i < prices.length; i++) {
+        const change = prices[i] - prices[i - 1];
+        if (change > 0) gains += change;
+        else losses -= change;
+    }
+    const avgGain = gains / 14;
+    const avgLoss = losses / 14;
+    const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+    const rsi = 100 - (100 / (1 + rs));
+
+    // Support and Resistance
+    const recentLows = prices.slice(-20).sort((a, b) => a - b).slice(0, 3);
+    const recentHighs = prices.slice(-20).sort((a, b) => b - a).slice(0, 3);
+    const support = recentLows.reduce((a, b) => a + b, 0) / recentLows.length;
+    const resistance = recentHighs.reduce((a, b) => a + b, 0) / recentHighs.length;
+
+    // Volume trend
+    const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+    const recentVolume = volumes.slice(-5).reduce((a, b) => a + b, 0) / 5;
+    const volumeTrend = recentVolume > avgVolume * 1.2 ? 'increasing' : recentVolume < avgVolume * 0.8 ? 'decreasing' : 'stable';
+
+    // Overall trend determination
+    let trend = 'sideways';
+    if (currentPrice > sma20 && priceChange20d > 5) trend = 'uptrend';
+    else if (currentPrice < sma20 && priceChange20d < -5) trend = 'downtrend';
+
     return {
-      trend: 'insufficient_data',
-      rsi: null,
-      macd: null,
-      support: null,
-      resistance: null,
-      volume_trend: 'unknown'
+        trend,
+        rsi: Math.round(rsi),
+        sma20: Math.round(sma20 * 100) / 100,
+        sma50: sma50 ? Math.round(sma50 * 100) / 100 : null,
+        support: Math.round(support * 100) / 100,
+        resistance: Math.round(resistance * 100) / 100,
+        priceChange5d: Math.round(priceChange5d * 100) / 100,
+        priceChange20d: Math.round(priceChange20d * 100) / 100,
+        volumeTrend
     };
-  }
-  
-  const prices = chartData.map(d => d.close);
-  const volumes = chartData.map(d => d.volume || 0);
-  
-  // Simple Moving Averages
-  const sma20 = prices.slice(-20).reduce((a, b) => a + b, 0) / 20;
-  const sma50 = prices.length >= 50 ? prices.slice(-50).reduce((a, b) => a + b, 0) / 50 : null;
-  
-  // Price trend
-  const currentPrice = prices[prices.length - 1];
-  const priceChange5d = ((currentPrice - prices[prices.length - 6]) / prices[prices.length - 6]) * 100;
-  const priceChange20d = ((currentPrice - prices[prices.length - 21]) / prices[prices.length - 21]) * 100;
-  
-  // RSI (simplified)
-  let gains = 0, losses = 0;
-  for (let i = prices.length - 14; i < prices.length; i++) {
-    const change = prices[i] - prices[i - 1];
-    if (change > 0) gains += change;
-    else losses -= change;
-  }
-  const avgGain = gains / 14;
-  const avgLoss = losses / 14;
-  const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-  const rsi = 100 - (100 / (1 + rs));
-  
-  // Support and Resistance
-  const recentLows = prices.slice(-20).sort((a, b) => a - b).slice(0, 3);
-  const recentHighs = prices.slice(-20).sort((a, b) => b - a).slice(0, 3);
-  const support = recentLows.reduce((a, b) => a + b, 0) / recentLows.length;
-  const resistance = recentHighs.reduce((a, b) => a + b, 0) / recentHighs.length;
-  
-  // Volume trend
-  const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-  const recentVolume = volumes.slice(-5).reduce((a, b) => a + b, 0) / 5;
-  const volumeTrend = recentVolume > avgVolume * 1.2 ? 'increasing' : recentVolume < avgVolume * 0.8 ? 'decreasing' : 'stable';
-  
-  // Overall trend determination
-  let trend = 'sideways';
-  if (currentPrice > sma20 && priceChange20d > 5) trend = 'uptrend';
-  else if (currentPrice < sma20 && priceChange20d < -5) trend = 'downtrend';
-  
-  return {
-    trend,
-    rsi: Math.round(rsi),
-    sma20: Math.round(sma20 * 100) / 100,
-    sma50: sma50 ? Math.round(sma50 * 100) / 100 : null,
-    support: Math.round(support * 100) / 100,
-    resistance: Math.round(resistance * 100) / 100,
-    priceChange5d: Math.round(priceChange5d * 100) / 100,
-    priceChange20d: Math.round(priceChange20d * 100) / 100,
-    volumeTrend
-  };
 }
 
 // 🎯 종합 분석 프롬프트 생성
 function createEnhancedAnalysisPrompt(params: {
-  stockData: StockData;
-  technicalAnalysis: any;
-  searchInfo: string;
-  wallStreetComments: string[];
-  marketSchedule: string[];
-  stockNews: NewsArticle[];
-  stockSentiment: any;
-  marketTrends: string;
-  fearGreedIndex: any;
-  language: string;
+    stockData: StockData;
+    technicalAnalysis: any;
+    searchInfo: string;
+    wallStreetComments: string[];
+    marketSchedule: string[];
+    stockNews: NewsArticle[];
+    stockSentiment: any;
+    marketTrends: string;
+    fearGreedIndex: any;
+    language: string;
 }): string {
-  const { 
-    stockData, 
-    technicalAnalysis, 
-    searchInfo, 
-    wallStreetComments, 
-    marketSchedule, 
-    stockNews, 
-    stockSentiment,
-    marketTrends,
-    fearGreedIndex,
-    language 
-  } = params;
-  
-  const isKorean = language === 'kr';
-  
-  // 뉴스 요약 생성
-  const newsDigest = stockNews.slice(0, 5).map((article, i) => 
-    `${i + 1}. ${article.title}${article.summary ? ` - ${article.summary.substring(0, 100)}...` : ''}`
-  ).join('\n');
-  
-  // 월가 인사이트 요약
-  const wallStreetInsights = wallStreetComments.slice(0, 3).join('\n');
-  
-  // 주요 일정 요약
-  const upcomingEvents = marketSchedule.slice(0, 3).join('\n');
-  
-  const prompt = isKorean ? `
+    const {
+        stockData,
+        technicalAnalysis,
+        searchInfo,
+        wallStreetComments,
+        marketSchedule,
+        stockNews,
+        stockSentiment,
+        marketTrends,
+        fearGreedIndex,
+        language
+    } = params;
+
+    const isKorean = language === 'kr';
+
+    // 뉴스 요약 생성
+    const newsDigest = stockNews.slice(0, 5).map((article, i) =>
+        `${i + 1}. ${article.title}${article.summary ? ` - ${article.summary.substring(0, 100)}...` : ''}`
+    ).join('\n');
+
+    // 월가 인사이트 요약
+    const wallStreetInsights = wallStreetComments.slice(0, 3).join('\n');
+
+    // 주요 일정 요약
+    const upcomingEvents = marketSchedule.slice(0, 3).join('\n');
+
+    const prompt = isKorean ? `
 다음 정보를 종합하여 ${stockData.name}(${stockData.ticker})에 대한 전문적이고 실행 가능한 투자 분석을 제공하세요:
 
 📊 주식 정보:
@@ -186,7 +188,7 @@ ${newsDigest}
 - 감정: ${stockSentiment.sentiment} (신뢰도: ${(stockSentiment.confidenceScore * 100).toFixed(0)}%)
 - 이유: ${stockSentiment.reasoning}
 
-💬 월가의 말말말:
+ 월가의 말말말:
 ${wallStreetInsights}
 
 📅 주요 일정:
@@ -252,156 +254,156 @@ Based on all the above information, provide:
 
 Provide clear and actionable advice.`;
 
-  return prompt;
+    return prompt;
 }
 
 // 📝 AI 분석 결과 파싱 (일관성 있는 신뢰도 계산)
 function parseEnhancedAnalysisResult(analysisText: string, language: string, stockData?: any, technicalAnalysis?: any): any {
-  try {
-    // 추천 추출
-    let recommendation = 'Hold';
-    if (analysisText.match(/strong buy|강력 매수|적극 매수/i)) {
-      recommendation = 'Buy';
-    } else if (analysisText.match(/buy|매수|buying opportunity|매수 기회/i)) {
-      recommendation = 'Buy';
-    } else if (analysisText.match(/sell|매도|avoid|회피/i)) {
-      recommendation = 'Hold'; // 매도를 Hold로 변경
+    try {
+        // 추천 추출
+        let recommendation = 'Hold';
+        if (analysisText.match(/strong buy|강력 매수|적극 매수/i)) {
+            recommendation = 'Buy';
+        } else if (analysisText.match(/buy|매수|buying opportunity|매수 기회/i)) {
+            recommendation = 'Buy';
+        } else if (analysisText.match(/sell|매도|avoid|회피/i)) {
+            recommendation = 'Hold'; // 매도를 Hold로 변경
+        }
+
+        // 🎯 일관성 있는 신뢰도 계산 (객관적 지표 기반)
+        let confidenceScore = calculateConsistentConfidence(stockData, technicalAnalysis, recommendation);
+
+        return {
+            analysisSummary: analysisText,
+            recommendation,
+            confidenceScore
+        };
+    } catch (error) {
+        console.error('[AI Analysis] 파싱 오류:', error);
+        return {
+            analysisSummary: analysisText,
+            recommendation: 'Hold',
+            confidenceScore: 0.5
+        };
     }
-    
-    // 🎯 일관성 있는 신뢰도 계산 (객관적 지표 기반)
-    let confidenceScore = calculateConsistentConfidence(stockData, technicalAnalysis, recommendation);
-    
-    return {
-      analysisSummary: analysisText,
-      recommendation,
-      confidenceScore
-    };
-  } catch (error) {
-    console.error('[AI Analysis] 파싱 오류:', error);
-    return {
-      analysisSummary: analysisText,
-      recommendation: 'Hold',
-      confidenceScore: 0.5
-    };
-  }
 }
 
 // 🎯 일관성 있는 신뢰도 계산 함수
 function calculateConsistentConfidence(stockData: any, technicalAnalysis: any, recommendation: string): number {
-  try {
-    let confidence = 0.5; // 기본값 50%
-    
-    if (!stockData || !technicalAnalysis) {
-      return confidence;
-    }
-    
-    // 1. 기술적 지표 기반 신뢰도 (+/- 20%)
-    if (technicalAnalysis.trend === 'bullish') {
-      confidence += 0.15;
-    } else if (technicalAnalysis.trend === 'bearish') {
-      confidence -= 0.1;
-    }
-    
-    // 2. RSI 기반 조정 (+/- 10%)
-    if (technicalAnalysis.rsi) {
-      if (technicalAnalysis.rsi > 70) {
-        confidence -= 0.1; // 과매수
-      } else if (technicalAnalysis.rsi < 30) {
-        confidence += 0.1; // 과매도
-      }
-    }
-    
-    // 3. 일일 변동률 기반 조정 (+/- 15%)
-    const dailyChange = Math.abs(stockData.dailyChange?.percentage || 0);
-    if (dailyChange > 5) {
-      confidence += 0.1; // 강한 움직임 = 높은 신뢰도
-    } else if (dailyChange < 1) {
-      confidence -= 0.05; // 약한 움직임 = 낮은 신뢰도
-    }
-    
-    // 4. 추천 유형별 조정
-    if (recommendation === 'Buy') {
-      confidence += 0.05; // 매수 추천에 약간의 가산점
-    }
-    
-    // 5. 거래량 기반 조정 (+/- 10%)
-    if (technicalAnalysis.volumeTrend === 'increasing') {
-      confidence += 0.1;
-    } else if (technicalAnalysis.volumeTrend === 'decreasing') {
-      confidence -= 0.05;
-    }
-    
-    // 6. P/E 비율 기반 조정 (+/- 10%)
-    if (stockData.peRatio) {
-      if (stockData.peRatio < 15) {
-        confidence += 0.1; // 저평가
-      } else if (stockData.peRatio > 30) {
-        confidence -= 0.1; // 고평가
-      }
-    }
-    
-    // 7. 공포 & 탐욕 지수 기반 조정 (+/- 10%)
-    // 극도의 공포(0-25): 역발상 투자 기회로 신뢰도 증가
-    // 극도의 탐욕(75-100): 과열로 신뢰도 감소
     try {
-      const globalObj = global as any;
-      if (globalObj.fearGreedIndex && globalObj.fearGreedIndex.indexValue) {
-        const fgIndex = globalObj.fearGreedIndex.indexValue;
-        if (fgIndex <= 25) {
-          confidence += 0.1; // 극도의 공포 = 역발상 기회
-        } else if (fgIndex >= 75) {
-          confidence -= 0.1; // 극도의 탐욕 = 과열 위험
+        let confidence = 0.5; // 기본값 50%
+
+        if (!stockData || !technicalAnalysis) {
+            return confidence;
         }
-      }
+
+        // 1. 기술적 지표 기반 신뢰도 (+/- 20%)
+        if (technicalAnalysis.trend === 'bullish') {
+            confidence += 0.15;
+        } else if (technicalAnalysis.trend === 'bearish') {
+            confidence -= 0.1;
+        }
+
+        // 2. RSI 기반 조정 (+/- 10%)
+        if (technicalAnalysis.rsi) {
+            if (technicalAnalysis.rsi > 70) {
+                confidence -= 0.1; // 과매수
+            } else if (technicalAnalysis.rsi < 30) {
+                confidence += 0.1; // 과매도
+            }
+        }
+
+        // 3. 일일 변동률 기반 조정 (+/- 15%)
+        const dailyChange = Math.abs(stockData.dailyChange?.percentage || 0);
+        if (dailyChange > 5) {
+            confidence += 0.1; // 강한 움직임 = 높은 신뢰도
+        } else if (dailyChange < 1) {
+            confidence -= 0.05; // 약한 움직임 = 낮은 신뢰도
+        }
+
+        // 4. 추천 유형별 조정
+        if (recommendation === 'Buy') {
+            confidence += 0.05; // 매수 추천에 약간의 가산점
+        }
+
+        // 5. 거래량 기반 조정 (+/- 10%)
+        if (technicalAnalysis.volumeTrend === 'increasing') {
+            confidence += 0.1;
+        } else if (technicalAnalysis.volumeTrend === 'decreasing') {
+            confidence -= 0.05;
+        }
+
+        // 6. P/E 비율 기반 조정 (+/- 10%)
+        if (stockData.peRatio) {
+            if (stockData.peRatio < 15) {
+                confidence += 0.1; // 저평가
+            } else if (stockData.peRatio > 30) {
+                confidence -= 0.1; // 고평가
+            }
+        }
+
+        // 7. 공포 & 탐욕 지수 기반 조정 (+/- 10%)
+        // 극도의 공포(0-25): 역발상 투자 기회로 신뢰도 증가
+        // 극도의 탐욕(75-100): 과열로 신뢰도 감소
+        try {
+            const globalObj = global as any;
+            if (globalObj.fearGreedIndex && globalObj.fearGreedIndex.indexValue) {
+                const fgIndex = globalObj.fearGreedIndex.indexValue;
+                if (fgIndex <= 25) {
+                    confidence += 0.1; // 극도의 공포 = 역발상 기회
+                } else if (fgIndex >= 75) {
+                    confidence -= 0.1; // 극도의 탐욕 = 과열 위험
+                }
+            }
+        } catch (error) {
+            // global 접근 오류시 무시
+        }
+
+        // 최종 범위 제한 (30% ~ 85%)
+        confidence = Math.max(0.3, Math.min(0.85, confidence));
+
+        // 5% 단위로 반올림하여 일관성 확보
+        confidence = Math.round(confidence * 20) / 20;
+
+        console.log(`[Confidence] 계산된 신뢰도: ${(confidence * 100).toFixed(0)}% (추천: ${recommendation})`);
+
+        return confidence;
+
     } catch (error) {
-      // global 접근 오류시 무시
+        console.error('[Confidence] 계산 오류:', error);
+        return 0.5;
     }
-    
-    // 최종 범위 제한 (30% ~ 85%)
-    confidence = Math.max(0.3, Math.min(0.85, confidence));
-    
-    // 5% 단위로 반올림하여 일관성 확보
-    confidence = Math.round(confidence * 20) / 20;
-    
-    console.log(`[Confidence] 계산된 신뢰도: ${(confidence * 100).toFixed(0)}% (추천: ${recommendation})`);
-    
-    return confidence;
-    
-  } catch (error) {
-    console.error('[Confidence] 계산 오류:', error);
-    return 0.5;
-  }
 }
 
 // Helper function to find a mock stock, with a fallback
 // 🛡️ 개선된 폴백 시스템 (실시간 가격 시뮬레이션)
 function getEnhancedFallbackStock(ticker: string): { stockData: StockData | null, chartData: ChartDataPoint[] } {
     console.log(`[ENHANCED FALLBACK] Generating realistic data for ${ticker}`);
-    
+
     // Mock 데이터를 기반으로 현실적인 시뮬레이션 생성
     const mockResult = getMockStock(ticker);
-    
+
     if (mockResult.stockData) {
         // 현실적인 가격 변동 시뮬레이션
         const basePrice = mockResult.stockData.currentPrice;
         const volatility = ticker === 'TSLA' ? 0.05 : 0.02; // TSLA는 더 변동성이 큼
-        
+
         // 현재 시간 기준으로 변동 적용
         const timeFactor = Math.sin(Date.now() / 1000000) * volatility;
         const randomFactor = (Math.random() - 0.5) * volatility;
         const totalChange = timeFactor + randomFactor;
-        
+
         const newPrice = basePrice * (1 + totalChange);
         const changeValue = newPrice - basePrice;
         const changePercentage = (changeValue / basePrice) * 100;
-        
+
         console.log(`[ENHANCED FALLBACK] ${ticker} 시뮬레이션 결과:`, {
             originalPrice: basePrice,
             newPrice: newPrice.toFixed(2),
             changeValue: changeValue.toFixed(2),
             changePercentage: changePercentage.toFixed(2) + '%'
         });
-        
+
         // 개선된 StockData 생성
         const enhancedStockData: StockData = {
             ...mockResult.stockData,
@@ -411,13 +413,13 @@ function getEnhancedFallbackStock(ticker: string): { stockData: StockData | null
                 percentage: changePercentage
             }
         };
-        
+
         return {
             stockData: enhancedStockData,
             chartData: mockResult.chartData
         };
     }
-    
+
     return mockResult;
 }
 
@@ -433,12 +435,12 @@ function getMockStock(ticker: string): { stockData: StockData | null, chartData:
 
 export async function getStockAndChartData(ticker: string): Promise<{ stockData: StockData | null; chartData: ChartDataPoint[] }> {
     console.log(`[REAL DATA] Getting real-time data for ${ticker} using multiple APIs.`);
-    
+
     try {
         // 🎯 한국 주식 vs 해외 주식 구분
         const isKoreanStock = ticker.includes('.KS') || /^[0-9]{6}$/.test(ticker);
         console.log(`[REAL DATA] ${ticker} is ${isKoreanStock ? 'Korean' : 'International'} stock`);
-        
+
         // 🚀 고속 데이터 API 우선순위 (안정적인 소스 우선, FMP는 후순위)
         const realDataSources = isKoreanStock ? [
             { name: 'Yahoo Finance', fn: () => getYahooFinanceStockData(ticker), timeout: 5000 },
@@ -455,17 +457,17 @@ export async function getStockAndChartData(ticker: string): Promise<{ stockData:
         for (const source of realDataSources) {
             try {
                 console.log(`[REAL DATA] ⚡ Trying ${source.name} API for ${ticker} (timeout: ${source.timeout}ms)`);
-                
+
                 // ⚡ 고속 타임아웃 적용으로 빠른 응답 보장
                 const result = await Promise.race([
                     source.fn(),
-                    new Promise<never>((_, reject) => 
+                    new Promise<never>((_, reject) =>
                         setTimeout(() => reject(new Error(`${source.name} timeout (${source.timeout}ms)`)), source.timeout)
                     )
                 ]);
-                
+
                 const { stockData, chartData } = result;
-                
+
                 if (stockData && chartData.length > 0) {
                     console.log(`[REAL DATA] ✅ Successfully fetched from ${source.name} for ${ticker}`);
                     console.log(`[REAL DATA] 📊 Data: $${stockData.currentPrice} (${stockData.dailyChange.percentage.toFixed(2)}%)`);
@@ -477,13 +479,13 @@ export async function getStockAndChartData(ticker: string): Promise<{ stockData:
                 continue;
             }
         }
-        
+
         // 모든 실제 API 실패시 개선된 폴백 시스템
         console.error(`[FALLBACK] All real APIs failed for ${ticker}, using enhanced fallback system`);
-        
+
         // 🛡️ 견고한 폴백 시스템
         return getEnhancedFallbackStock(ticker);
-        
+
     } catch (error) {
         console.error(`[ERROR] Error in stock data pipeline for ${ticker}:`, error);
         console.log(`[ERROR FALLBACK] Using enhanced fallback system for ${ticker}`);
@@ -494,28 +496,28 @@ export async function getStockAndChartData(ticker: string): Promise<{ stockData:
 // 🔍 AI 검색을 통한 종목 정보 확실하게 파악 함수
 async function getEnhancedStockInfo(ticker: string, companyName: string, language: string): Promise<string> {
     console.log(`[Enhanced Stock Info] Getting detailed info for ${ticker} (${companyName})`);
-    
+
     try {
         // 🎯 종목별 상세 정보 검색 쿼리
-        const searchQuery = language === 'kr' 
+        const searchQuery = language === 'kr'
             ? `${companyName} ${ticker} 회사정보 사업분야 주요제품 실적 재무상태 경쟁우위 투자포인트`
             : `${companyName} ${ticker} company profile business segments main products financial performance competitive advantage investment thesis`;
-        
+
         const result = await getGeminiWithGoogleSearch(searchQuery, language);
-        
+
         if (result.response && result.searchUsed) {
             console.log(`[Enhanced Stock Info] ✅ Retrieved detailed info for ${ticker}`);
             return result.response;
         }
-        
+
         // 폴백: 기본 종목 정보
-        return language === 'kr' 
+        return language === 'kr'
             ? `${companyName}(${ticker})에 대한 기본 분석을 진행합니다.`
             : `Proceeding with basic analysis for ${companyName} (${ticker}).`;
-            
+
     } catch (error) {
         console.warn(`[Enhanced Stock Info] Failed for ${ticker}:`, error);
-        return language === 'kr' 
+        return language === 'kr'
             ? `${companyName}(${ticker})에 대한 기본 분석을 진행합니다.`
             : `Proceeding with basic analysis for ${companyName} (${ticker}).`;
     }
@@ -523,9 +525,9 @@ async function getEnhancedStockInfo(ticker: string, companyName: string, languag
 
 // 🤖 강화된 AI 분석 시스템 (Google 검색 + 종합 분석 + 사용자 프롬프트)
 export async function getAiAnalysis(
-    stockData: StockData, 
-    chartData: ChartDataPoint[], 
-    newsSentiment: any, 
+    stockData: StockData,
+    chartData: ChartDataPoint[],
+    newsSentiment: any,
     language: string,
     userId?: string,
     allNews?: NewsArticle[],
@@ -533,9 +535,9 @@ export async function getAiAnalysis(
 ) {
     const isKorean = language === 'kr';
     const companyName = getCompanyName(stockData.ticker, isKorean);
-    
+
     console.log(`[AI Analysis] 🚀 강화된 AI 분석 시작: ${stockData.ticker} (${companyName})...`);
-    
+
     try {
         // 1. 사용자별 시스템 프롬프트 가져오기
         let systemPrompt = isKorean ? DEFAULT_SYSTEM_PROMPT_KR : DEFAULT_SYSTEM_PROMPT;
@@ -544,15 +546,15 @@ export async function getAiAnalysis(
             systemPrompt = prompt;
             console.log(`[AI Analysis] 📝 시스템 프롬프트: ${isCustom ? '사용자 커스텀' : '기본값'}`);
         }
-        
+
         // 한국어로 답변하도록 강제
         if (isKorean) {
             systemPrompt += "\n\n**중요: 모든 분석과 답변은 반드시 한국어로 제공하세요. 3-5문장으로 간결하게 요약하여 작성하세요.**";
         }
-        
+
         // 2. 병렬로 모든 정보 수집
         console.log(`[AI Analysis] 🔍 종합 정보 수집 시작...`);
-        
+
         const [
             searchInfo,
             wallStreetComments,
@@ -574,17 +576,17 @@ export async function getAiAnalysis(
             // 공포 & 탐욕 지수
             getRealtimeFearGreedIndex()
         ]);
-        
+
         console.log(`[AI Analysis] ✅ 정보 수집 완료:`);
         console.log(`  - 검색 정보: ${searchInfo.searchUsed ? '성공' : '실패'}`);
         console.log(`  - 월가 코멘트: ${wallStreetComments.length}개`);
         console.log(`  - 주요 일정: ${marketSchedule.length}개`);
         console.log(`  - 종목 뉴스: ${stockNewsData.length}개`);
-        
+
         // 3. 차트 기술적 분석
         const technicalAnalysis = performTechnicalAnalysis(chartData);
         console.log(`[AI Analysis] 📊 기술적 분석:`, technicalAnalysis);
-        
+
         // 4. 종목별 뉴스 심리 분석
         const relevantNews = stockNewsData.filter(article => {
             const titleLower = article.title.toLowerCase();
@@ -592,18 +594,18 @@ export async function getAiAnalysis(
             const nameLower = stockData.name.toLowerCase();
             return titleLower.includes(tickerLower) || titleLower.includes(nameLower);
         });
-        
-        const stockSentiment = relevantNews.length > 0 
+
+        const stockSentiment = relevantNews.length > 0
             ? await getNewsSentiment(relevantNews.map(a => a.title), language)
             : newsSentiment;
-        
+
         // 5. Gemini 프로 분석 (모든 정보 종합)
         const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
-        const model = genAI.getGenerativeModel({ 
+        const model = genAI.getGenerativeModel({
             model: "gemini-1.5-pro",
             systemInstruction: systemPrompt
         });
-        
+
         // 6. 종합 분석 프롬프트 생성
         const analysisPrompt = createEnhancedAnalysisPrompt({
             stockData,
@@ -617,25 +619,25 @@ export async function getAiAnalysis(
             fearGreedIndex,
             language
         });
-        
+
         console.log(`[AI Analysis] 📝 종합 분석 프롬프트 생성 완료 (${analysisPrompt.length} chars)`);
-        
+
         // 7. AI 분석 실행
         const result = await model.generateContent(analysisPrompt);
         const response = result.response;
         const analysisText = response.text();
-        
+
         console.log(`[AI Analysis] ✅ Gemini Pro 분석 완료`);
-        
+
         // 8. 분석 결과 파싱 (일관성 있는 신뢰도 계산)
         const parsedAnalysis = parseEnhancedAnalysisResult(analysisText, language, stockData, technicalAnalysis);
-        
+
         // 9. 매도 추천 제거 (Hold로 변경)
         if (parsedAnalysis.recommendation === 'Sell') {
             parsedAnalysis.recommendation = 'Hold';
             console.log(`[AI Analysis] 📝 매도 추천을 관망으로 변경`);
         }
-        
+
         // 10. 목표가 계산 및 최종 결과 생성
         const finalResult = {
             ...parsedAnalysis,
@@ -648,32 +650,32 @@ export async function getAiAnalysis(
                 newsAnalyzed: relevantNews.length
             }
         };
-        
+
         console.log(`[AI Analysis] 🎯 최종 분석 완료: ${parsedAnalysis.recommendation}`);
-        
+
         return finalResult;
-        
+
     } catch (error) {
         console.error(`[AI Analysis] Error generating analysis:`, error);
-        
+
         // 에러 시 중립적 폴백 분석 제공 (매도 추천 없음)
         const isKorean = language === 'kr';
         const priceChange = stockData.dailyChange.percentage;
         const peRatio = stockData.peRatio || 0;
-        
+
         let recommendation = 'Hold'; // 기본값은 중립/관망
         let confidenceScore = 0.5;
         let analysisSummary = '';
-        
+
         // 매우 긍정적인 조건일 때만 매수 추천
         if (priceChange > 5 && peRatio < 15) {
             recommendation = 'Buy';
             confidenceScore = 0.7;
         }
-        
+
         if (isKorean) {
             analysisSummary = `${stockData.name}(${stockData.ticker})의 현재 주가는 ${stockData.currentPrice.toLocaleString()}원이며, 일일 변동률은 ${priceChange > 0 ? '+' : ''}${priceChange.toFixed(2)}%입니다. `;
-            
+
             if (recommendation === 'Buy') {
                 analysisSummary += `강한 상승세와 합리적인 밸류에이션을 고려할 때 매수를 고려해볼 수 있습니다. 단, 충분한 리서치와 함께 신중한 투자를 권장합니다.`;
             } else {
@@ -681,23 +683,23 @@ export async function getAiAnalysis(
             }
         } else {
             analysisSummary = `${stockData.name} (${stockData.ticker}) is currently trading at $${stockData.currentPrice.toLocaleString()} with a daily change of ${priceChange > 0 ? '+' : ''}${priceChange.toFixed(2)}%. `;
-            
+
             if (recommendation === 'Buy') {
                 analysisSummary += `Strong upward momentum and reasonable valuation suggest potential buying opportunity. However, please conduct thorough research and invest prudently.`;
             } else {
                 analysisSummary += `Based on comprehensive analysis of current market conditions and company fundamentals, it's recommended to wait and see for additional signals. Please monitor upcoming earnings reports and market trends carefully.`;
             }
         }
-        
+
         const fallbackResult = {
             analysisSummary,
             recommendation,
             confidenceScore,
             ...calculatePriceTargets(stockData, recommendation, peRatio)
         };
-        
+
         console.log(`[AI Analysis] 📝 Fallback analysis ready (recommendation: ${recommendation})`);
-        
+
         return fallbackResult;
     }
 }
@@ -716,17 +718,17 @@ export async function saveAiAnalysisToHistory(
 ): Promise<{ success: boolean; data?: any; error?: any }> {
     try {
         console.log(`[AI Analysis Save] 💾 Starting manual save for ${stockData.ticker}`);
-        
 
-        
+
+
         if (!userId) {
             console.log(`[AI Analysis Save] ⚠️ No user ID provided`);
             return { success: false, error: 'User ID not provided' };
         }
-        
+
         const sentiment_value = sentiment?.sentiment || 'neutral';
         const isFallback = !analysis?.analysisSummary || analysis?.analysisSummary.includes('시장 상황을 고려할 때');
-        
+
         // 실제 AI 분석 기록 저장 (주식 분석 + 뉴스 감정 분석)
         const analysisRecord = {
             user_id: userId,
@@ -776,9 +778,9 @@ export async function saveAiAnalysisToHistory(
             model_used: isFallback ? 'Fallback Analysis' : 'Gemini Pro',
             tags: ['stock', stockData.ticker, language, sentiment_value, 'manual_save']
         };
-        
+
         const savedAnalysis = await saveAnalysisRecord(analysisRecord);
-        
+
         if (savedAnalysis.success) {
             console.log(`[AI Analysis Save] ✅ Analysis saved successfully with ID: ${savedAnalysis.data?.id}`);
             return { success: true, data: savedAnalysis.data };
@@ -786,7 +788,7 @@ export async function saveAiAnalysisToHistory(
             console.warn(`[AI Analysis Save] ⚠️ Failed to save analysis:`, savedAnalysis.error);
             return { success: false, error: savedAnalysis.error };
         }
-        
+
     } catch (error) {
         console.error(`[AI Analysis Save] ❌ Error saving analysis:`, error);
         return { success: false, error };
@@ -795,29 +797,29 @@ export async function saveAiAnalysisToHistory(
 
 export async function getNewsSentiment(articleTitles: string[], language: string) {
     console.log(`[News Sentiment] Analyzing sentiment for ${articleTitles.length} articles in ${language}.`);
-    
+
     try {
         // AI 뉴스 감정 분석 플로우 사용
 
-        
+
         const sentimentResult = await analyzeNewsSentiment({
             language: language,
             articleTitles: articleTitles
         });
-        
+
         console.log(`[News Sentiment] ✅ Successfully analyzed sentiment: ${sentimentResult.sentiment}`);
         return sentimentResult;
-        
+
     } catch (error) {
         console.error(`[News Sentiment] Error analyzing sentiment:`, error);
-        
+
         // 에러 시 간단한 감정 분석 제공
         const positiveWords = ['surge', 'gain', 'rise', 'up', 'high', 'profit', 'growth', '상승', '증가', '호조', '신고가', '수익'];
         const negativeWords = ['fall', 'drop', 'down', 'loss', 'decline', 'crash', 'bear', '하락', '감소', '부진', '손실', '약세'];
-        
+
         let positiveCount = 0;
         let negativeCount = 0;
-        
+
         articleTitles.forEach(title => {
             const lowerTitle = title.toLowerCase();
             positiveWords.forEach(word => {
@@ -827,11 +829,11 @@ export async function getNewsSentiment(articleTitles: string[], language: string
                 if (lowerTitle.includes(word)) negativeCount++;
             });
         });
-        
+
         let sentiment = 'neutral';
         let confidenceScore = 0.5;
         let reasoning = '';
-        
+
         if (positiveCount > negativeCount * 1.5) {
             sentiment = 'positive';
             confidenceScore = Math.min(0.8, 0.5 + (positiveCount / articleTitles.length) * 0.5);
@@ -839,13 +841,13 @@ export async function getNewsSentiment(articleTitles: string[], language: string
             sentiment = 'negative';
             confidenceScore = Math.min(0.8, 0.5 + (negativeCount / articleTitles.length) * 0.5);
         }
-        
+
         if (language === 'kr') {
             reasoning = `${articleTitles.length}개의 뉴스 헤드라인 분석 결과, 긍정적 키워드 ${positiveCount}개, 부정적 키워드 ${negativeCount}개가 발견되었습니다.`;
         } else {
             reasoning = `Analysis of ${articleTitles.length} news headlines found ${positiveCount} positive and ${negativeCount} negative keywords.`;
         }
-        
+
         return {
             sentiment,
             confidenceScore,
@@ -856,7 +858,7 @@ export async function getNewsSentiment(articleTitles: string[], language: string
 
 export async function getRealtimeFearGreedIndex(): Promise<{ indexValue: number } | null> {
     console.log(`[Action] Getting REALTIME Fear & Greed index from CNN.`);
-    
+
     // 🔥 CNN Fear & Greed 지수 직접 가져오기
     try {
         // CNN Fear & Greed JSON API (사용자가 제공한 사이트 기반)
@@ -868,15 +870,15 @@ export async function getRealtimeFearGreedIndex(): Promise<{ indexValue: number 
                     'Referer': 'https://edition.cnn.com/'
                 }
             }),
-            new Promise<never>((_, reject) => 
+            new Promise<never>((_, reject) =>
                 setTimeout(() => reject(new Error('CNN API timeout')), 3000)
             )
         ]);
-        
+
         if (cnnResponse.ok) {
             const cnnData = await cnnResponse.json();
             console.log('[CNN Fear & Greed] Raw data:', cnnData);
-            
+
             // CNN API 응답 구조 분석
             if (cnnData.fear_and_greed) {
                 const score = cnnData.fear_and_greed.score || cnnData.fear_and_greed.previous_close;
@@ -886,7 +888,7 @@ export async function getRealtimeFearGreedIndex(): Promise<{ indexValue: number 
                     return { indexValue };
                 }
             }
-            
+
             // 다른 구조 시도
             if (cnnData.data && cnnData.data.length > 0) {
                 const latestData = cnnData.data[cnnData.data.length - 1];
@@ -900,7 +902,7 @@ export async function getRealtimeFearGreedIndex(): Promise<{ indexValue: number 
     } catch (error) {
         console.warn('[Fear & Greed] CNN API failed:', error);
     }
-    
+
     // 🚀 Alternative.me API (백업)
     try {
         const response = await fetch('https://api.alternative.me/fng/?limit=1', {
@@ -908,7 +910,7 @@ export async function getRealtimeFearGreedIndex(): Promise<{ indexValue: number 
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
         });
-        
+
         if (response.ok) {
             const data = await response.json();
             if (data.data && data.data[0] && data.data[0].value) {
@@ -917,34 +919,34 @@ export async function getRealtimeFearGreedIndex(): Promise<{ indexValue: number 
                 return { indexValue };
             }
         }
-        
+
     } catch (error) {
         console.error('[Fear & Greed] Alternative.me backup failed:', error);
     }
-    
+
     // 🎯 현재 시장 상황을 반영한 실시간 지수 (사용자가 언급한 65 근처)
     try {
         const now = new Date();
         const hour = now.getHours();
         const minute = now.getMinutes();
         const second = now.getSeconds();
-        
+
         // 사용자가 언급한 현재 지수 65를 기준으로 실시간 변동
         let baseScore = 65;
-        
+
         // 시간대별 미세 조정
         const timeVariation = Math.sin((hour * 3600 + minute * 60 + second) / 86400 * 2 * Math.PI) * 3;
         const dailyTrend = Math.sin(hour * Math.PI / 12) * 2;
-        
+
         const finalIndex = Math.round(baseScore + timeVariation + dailyTrend);
         const clampedIndex = Math.max(1, Math.min(100, finalIndex));
-        
+
         console.log(`[Fear & Greed] 📊 Real-time market-based: ${clampedIndex} (base: 65)`);
         return { indexValue: clampedIndex };
-        
+
     } catch (error) {
         console.warn("[Fear & Greed] Calculation error, using static:", error);
-        
+
         // 🆘 최종 폴백 (사용자가 언급한 65)
         return { indexValue: 65 };
     }
@@ -952,31 +954,70 @@ export async function getRealtimeFearGreedIndex(): Promise<{ indexValue: number 
 
 export async function getNewsSummary(article: NewsArticle, language: string): Promise<{ translatedTitle?: string; summary?: string; error?: string; }> {
     console.log(`[AI SUMMARY] Generating summary for: "${article.title?.substring(0, 50) || 'Unknown'}..."`);
-    
+
     try {
         // 🛡️ 입력 데이터 검증
         if (!article || !article.title) {
             console.warn(`[AI SUMMARY] Invalid article data`);
             return {
                 translatedTitle: 'Unknown Article',
-                summary: language === 'kr' 
+                summary: language === 'kr'
                     ? '기사 정보가 없어 요약을 생성할 수 없습니다.'
                     : 'Unable to generate summary due to missing article information.',
                 error: 'Invalid article data'
             };
         }
 
-        // 🔍 뉴스 본문 확인 (우선순위: content > DB > summary > title)
+        // 🚫 월가의 말말말 관련 뉴스는 요약하지 않음
+        const titleLower = article.title.toLowerCase();
+        const wallStreetKeywords = ['월가의 말말말', '월가', 'wall street', '모건스탠리', 'goldman', '골드만', 'morgan stanley', 'analyst', '애널리스트'];
+        const isWallStreetNews = wallStreetKeywords.some(keyword => titleLower.includes(keyword.toLowerCase()));
+
+        if (isWallStreetNews) {
+            console.log(`[AI SUMMARY] 🚫 월가의 말말말 관련 뉴스는 요약하지 않음: ${article.title}`);
+            return {
+                translatedTitle: article.title,
+                summary: language === 'kr'
+                    ? '이 뉴스는 월가의 말말말 섹션에 속하는 내용입니다. 월가 애널리스트들의 의견은 별도 섹션에서 확인하세요.'
+                    : 'This news belongs to the Wall Street comments section. Please check the Wall Street section for analyst opinions.',
+                error: 'Wall Street news filtered out'
+            };
+        }
+
+        // 🔍 뉴스 본문 확인 (우선순위: content > URL 크롤링 > DB > summary > title)
         let fullContent = '';
-        
+
         try {
             // 1순위: article.content 사용 (GitBook 등에서 제공된 상세 내용)
             if (article.content && typeof article.content === 'string' && article.content.length > 50) {
                 fullContent = article.content;
                 console.log(`[AI SUMMARY] Using article content: ${fullContent.length} chars`);
             }
-            // 2순위: DB에서 저장된 뉴스 본문 검색
-            else if (article.url && article.url !== '#' && typeof article.url === 'string') {
+            // 2순위: URL이 있으면 실제 페이지에서 세부 내용 크롤링
+            else if (article.url && article.url !== '#' && typeof article.url === 'string' && article.url.includes('gitbook.io')) {
+                try {
+                    console.log(`[AI SUMMARY] 🔗 실제 페이지에서 세부 내용 크롤링: ${article.url}`);
+                    const detailResponse = await fetch(article.url, {
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                        },
+                        signal: AbortSignal.timeout(5000)
+                    });
+
+                    if (detailResponse.ok) {
+                        const detailHtml = await detailResponse.text();
+                        const { content: extractedContent } = extractSpecificNewsContent(detailHtml, article.title);
+                        if (extractedContent && extractedContent.length > 100) {
+                            fullContent = extractedContent;
+                            console.log(`[AI SUMMARY] ✅ 실제 페이지에서 세부 내용 추출: ${fullContent.length} chars`);
+                        }
+                    }
+                } catch (urlError) {
+                    console.warn(`[AI SUMMARY] URL 크롤링 실패, 다른 소스 사용`);
+                }
+            }
+            // 3순위: DB에서 저장된 뉴스 본문 검색
+            if (!fullContent && article.url && article.url !== '#' && typeof article.url === 'string') {
                 try {
                     const dbArticle = await findNewsArticleByUrl(article.url);
                     if (dbArticle && dbArticle.content && typeof dbArticle.content === 'string') {
@@ -987,12 +1028,12 @@ export async function getNewsSummary(article: NewsArticle, language: string): Pr
                     console.warn(`[AI SUMMARY] DB lookup failed, continuing with other sources`);
                 }
             }
-            // 3순위: summary 사용
+            // 4순위: summary 사용
             if (!fullContent && article.summary && typeof article.summary === 'string') {
                 fullContent = article.summary;
                 console.log(`[AI SUMMARY] Using article summary: ${fullContent.length} chars`);
             }
-            // 4순위: title만 사용
+            // 5순위: title만 사용
             if (!fullContent) {
                 fullContent = article.title;
                 console.log(`[AI SUMMARY] Using only title for summary`);
@@ -1007,56 +1048,60 @@ export async function getNewsSummary(article: NewsArticle, language: string): Pr
         const safeSource = (article.source || 'Unknown').substring(0, 100);
         const safeUrl = article.url && article.url !== '#' ? article.url : '';
         const safeContent = fullContent.substring(0, 1500); // 토큰 제한 고려
-        
+
         // 🎯 초간단 시스템 - 검색 없이 바로 제목과 기존 내용으로 요약
         console.log(`[AI SUMMARY] Creating smart summary for: "${safeTitle}"`);
-        
-        // 📝 사용 가능한 모든 정보 수집
+
+        // 📝 헤드라인과 본문을 명확히 구분하여 정보 수집
         let allContent = '';
-        
-        // 1. 제목 추가
-        allContent += `제목: ${safeTitle}\n`;
-        
+
+        // 1. 헤드라인 추가
+        allContent += `헤드라인: ${safeTitle}\n`;
+
         // 2. 출처 추가  
         allContent += `출처: ${safeSource}\n`;
-        
-        // 3. 기존 내용이 있으면 추가
-        if (safeContent && safeContent.length > 20) {
-            allContent += `내용: ${safeContent}\n`;
+
+        // 3. 본문 내용이 있으면 추가 (제목과 다른 경우에만)
+        if (safeContent && safeContent.length > 20 && safeContent !== safeTitle) {
+            allContent += `본문 내용: ${safeContent}\n`;
         }
-        
+
         // 4. URL이 있으면 추가
         if (safeUrl) {
-            allContent += `링크: ${safeUrl}\n`;
+            allContent += `원문 링크: ${safeUrl}\n`;
         }
-        
-        // 📝 간단하고 직접적인 프롬프트 생성
-        const prompt = language === 'kr' 
-            ? `다음 뉴스 정보를 바탕으로 한국어로 2-3문장의 명확한 요약을 작성해주세요:
+
+        // 📝 월가 관련 내용을 제외하고 요약하도록 명시적 지시
+        const prompt = language === 'kr'
+            ? `다음 뉴스 정보를 바탕으로 한국어로 2-3문장의 명확한 요약을 작성해주세요.
+
+중요: 이 뉴스는 시장 뉴스이므로, 월가의 말말말이나 애널리스트 의견은 제외하고 팩트 중심으로 요약해주세요.
 
 ${allContent}
 
-위 정보를 종합하여 이 뉴스의 핵심 내용을 간결하고 정확하게 요약해주세요:
+위 정보를 종합하여 이 뉴스의 핵심 내용을 간결하고 정확하게 요약해주세요 (월가 관련 내용 제외):
 
 요약:`
-            : `Based on the following news information, please write a clear 2-3 sentence summary in English:
+            : `Based on the following news information, please write a clear 2-3 sentence summary in English.
+
+Important: This is market news, so please exclude Wall Street comments or analyst opinions and focus on facts.
 
 ${allContent}
 
-Please provide a concise and accurate summary of this news based on the above information:
+Please provide a concise and accurate summary of this news based on the above information (excluding Wall Street content):
 
 Summary:`;
 
-        // 🔑 초간단 Gemini API 호출
+        // 🔑 개선된 Gemini API 호출
         try {
-            console.log(`[AI SUMMARY] 간단한 Gemini 요약 생성중...`);
-            
+            console.log(`[AI SUMMARY] 개선된 Gemini 요약 생성중...`);
+
             const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=' + process.env.GOOGLE_AI_API_KEY, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     contents: [{ parts: [{ text: prompt }] }],
-                    generationConfig: { temperature: 0.1, maxOutputTokens: 200 },
+                    generationConfig: { temperature: 0.1, maxOutputTokens: 300 },
                     safetySettings: [
                         { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
                         { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
@@ -1064,22 +1109,22 @@ Summary:`;
                         { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
                     ]
                 }),
-                signal: AbortSignal.timeout(3000)
+                signal: AbortSignal.timeout(5000)
             });
-            
+
             if (response.ok) {
                 const data = await response.json();
                 const summary = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-                
+
                 if (summary && summary.length > 5) {
                     console.log(`[AI SUMMARY] ✅ 성공: ${summary.substring(0, 30)}...`);
                     return { translatedTitle: safeTitle, summary };
                 }
             }
-            
+
             console.warn(`[AI SUMMARY] API 응답 실패, 폴백 사용`);
             throw new Error('Gemini failed');
-            
+
         } catch (error) {
             console.warn(`[AI SUMMARY] Gemini 오류:`, error);
             throw error;
@@ -1087,27 +1132,27 @@ Summary:`;
 
     } catch (error) {
         console.warn(`[AI SUMMARY] Error occurred, using smart fallback:`, error);
-        
+
         // 🛡️ 절대 실패하지 않는 스마트 폴백 요약
         try {
             const smartSummary = generateSmartFallbackSummary(article, language);
             const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-            
+
             return {
                 translatedTitle: article.title || 'Unknown Article',
                 summary: smartSummary,
-                error: language === 'kr' 
+                error: language === 'kr'
                     ? 'AI 요약을 사용할 수 없어 기본 요약을 제공합니다.'
                     : 'AI summary unavailable, providing basic summary.'
             };
         } catch (fallbackError) {
             console.error(`[AI SUMMARY] Even fallback failed:`, fallbackError);
-            
+
             // 🆘 최후의 안전장치
-            const ultimateFallback = language === 'kr' 
+            const ultimateFallback = language === 'kr'
                 ? `${article.source || '뉴스'}에서 보도한 "${(article.title || '제목 없음').substring(0, 50)}..." 관련 기사입니다. 자세한 내용은 원문을 확인해주세요.`
                 : `This is a news article from ${article.source || 'News Source'} about "${(article.title || 'No Title').substring(0, 50)}...". Please check the original article for details.`;
-                
+
             return {
                 translatedTitle: article.title || 'Unknown Article',
                 summary: ultimateFallback,
@@ -1120,12 +1165,12 @@ Summary:`;
 // 🔍 Google 검색 기능이 포함된 Gemini AI 함수
 export async function getGeminiWithGoogleSearch(query: string, language: string): Promise<{ response: string; searchUsed: boolean; error?: string; }> {
     console.log(`[Gemini + Google Search] Processing query: "${query.substring(0, 50)}..."`);
-    
+
     try {
         // 🔑 Gemini API 호출 (Google Search grounding 포함)
         const geminiApiKey = 'AIzaSyBeiOwYWGupnzAXMO3t6pdVyYHFptd16Og';
-        
-        const prompt = language === 'kr' 
+
+        const prompt = language === 'kr'
             ? `다음 질문에 대해 최신 정보를 검색하여 한국어로 답변해주세요. 필요하면 Google 검색을 통해 실시간 정보를 찾아주세요:
 
 질문: ${query}
@@ -1138,35 +1183,35 @@ Question: ${query}
 Answer:`;
 
         console.log(`[Gemini + Google Search] Calling API with search grounding...`);
-        
+
         const response = await Promise.race([
             fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
                     'User-Agent': 'Mozilla/5.0 (compatible; NewsApp/1.0)'
-            },
-            body: JSON.stringify({
-                contents: [{
-                    parts: [{
-                        text: prompt
-                    }]
-                }],
-                generationConfig: {
+                },
+                body: JSON.stringify({
+                    contents: [{
+                        parts: [{
+                            text: prompt
+                        }]
+                    }],
+                    generationConfig: {
                         temperature: 0.4,
-                    topK: 40,
+                        topK: 40,
                         topP: 0.9,
                         maxOutputTokens: 500,
                         candidateCount: 1
-                },
-                safetySettings: [
-                    {
-                        category: "HARM_CATEGORY_HARASSMENT",
-                        threshold: "BLOCK_MEDIUM_AND_ABOVE"
                     },
-                    {
-                        category: "HARM_CATEGORY_HATE_SPEECH",
-                        threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                    safetySettings: [
+                        {
+                            category: "HARM_CATEGORY_HARASSMENT",
+                            threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                        },
+                        {
+                            category: "HARM_CATEGORY_HATE_SPEECH",
+                            threshold: "BLOCK_MEDIUM_AND_ABOVE"
                         },
                         {
                             category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
@@ -1190,7 +1235,7 @@ Answer:`;
                     ]
                 })
             }),
-            new Promise<never>((_, reject) => 
+            new Promise<never>((_, reject) =>
                 setTimeout(() => reject(new Error('Gemini Google Search timeout (12s)')), 12000)
             )
         ]);
@@ -1198,17 +1243,17 @@ Answer:`;
         if (!response.ok) {
             const errorText = await response.text().catch(() => 'Failed to read error response');
             console.warn(`[Gemini + Google Search] API failed with status ${response.status}: ${errorText}`);
-            
+
             throw new Error(`Gemini Google Search API failed: ${response.status}`);
         }
 
         const data = await response.json();
-        
+
         // 응답 데이터 검증
         if (!data || typeof data !== 'object') {
             throw new Error('Invalid API response format');
         }
-        
+
         if (!data.candidates || !Array.isArray(data.candidates) || data.candidates.length === 0) {
             throw new Error('No response candidates from Gemini API');
         }
@@ -1219,16 +1264,16 @@ Answer:`;
         }
 
         const responseText = candidate.content.parts[0]?.text?.trim();
-        
+
         if (!responseText || typeof responseText !== 'string') {
             throw new Error('Empty or invalid response text from Gemini API');
         }
 
         // Google Search 사용 여부 확인
         const searchUsed = data.candidates[0].groundingMetadata?.webSearchQueries?.length > 0 || false;
-        
+
         console.log(`[Gemini + Google Search] ✅ Success (${responseText.length} chars, search used: ${searchUsed})`);
-        
+
         return {
             response: responseText,
             searchUsed: searchUsed,
@@ -1236,11 +1281,11 @@ Answer:`;
 
     } catch (error) {
         console.warn(`[Gemini + Google Search] Error:`, error);
-        
+
         const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-        
+
         return {
-            response: language === 'kr' 
+            response: language === 'kr'
                 ? `Google 검색 기능을 사용한 AI 응답을 생성할 수 없습니다. (${errorMsg})`
                 : `Unable to generate AI response with Google Search. (${errorMsg})`,
             searchUsed: false,
@@ -1252,15 +1297,15 @@ Answer:`;
 // 🔍 실시간 종목 정보 검색 함수
 export async function getRealtimeStockInfoWithSearch(ticker: string, language: string): Promise<{ info: string; searchUsed: boolean; error?: string; }> {
     console.log(`[Realtime Stock Search] Getting latest info for "${ticker}"`);
-    
+
     const companyName = getCompanyName(ticker, language === 'kr');
-    
-    const query = language === 'kr' 
+
+    const query = language === 'kr'
         ? `${companyName}(${ticker}) 최신 주가 동향 뉴스 실적 전망 2024년 2025년`
         : `${companyName} (${ticker}) latest stock price news earnings forecast 2024 2025`;
-    
+
     const result = await getGeminiWithGoogleSearch(query, language);
-    
+
     return {
         info: result.response,
         searchUsed: result.searchUsed,
@@ -1271,13 +1316,13 @@ export async function getRealtimeStockInfoWithSearch(ticker: string, language: s
 // 🔍 실시간 시장 동향 검색 함수
 export async function getRealtimeMarketTrendsWithSearch(language: string): Promise<{ info: string; searchUsed: boolean; error?: string; }> {
     console.log(`[Realtime Market Search] Getting latest market trends`);
-    
-    const query = language === 'kr' 
+
+    const query = language === 'kr'
         ? `최신 주식 시장 동향 코스피 나스닥 S&P500 경제 뉴스 오늘 2024년 12월`
         : `latest stock market trends KOSPI NASDAQ S&P500 economic news today December 2024`;
-    
+
     const result = await getGeminiWithGoogleSearch(query, language);
-    
+
     return {
         info: result.response,
         searchUsed: result.searchUsed,
@@ -1288,12 +1333,12 @@ export async function getRealtimeMarketTrendsWithSearch(language: string): Promi
 // 🔍 제미나이 구글 검색을 통한 실제 뉴스 링크 가져오기 함수 (대폭 강화)
 export async function getGeminiRealNewsLinks(ticker: string, language: string): Promise<NewsArticle[]> {
     console.log(`[Gemini Real News] 🔗 실제 뉴스 링크 검색 시작 for "${ticker}"`);
-    
+
     try {
         const companyName = getCompanyName(ticker, language === 'kr');
         const currentDate = new Date().toISOString().split('T')[0];
         const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-        
+
         // 🎯 강화된 다중 검색 전략
         const searchQueries = language === 'kr' ? [
             `"${companyName}" "${ticker}" 뉴스 헤드라인 ${currentDate} ${yesterday}`,
@@ -1313,9 +1358,9 @@ export async function getGeminiRealNewsLinks(ticker: string, language: string): 
         const searchPromises = searchQueries.map(async (query, index) => {
             try {
                 console.log(`[Gemini Real News] 검색 ${index + 1}: ${query.substring(0, 80)}...`);
-                
+
                 // 더 구체적인 프롬프트로 실제 뉴스 헤드라인 요청
-                const prompt = language === 'kr' 
+                const prompt = language === 'kr'
                     ? `다음 검색어로 최신 실제 뉴스 헤드라인을 찾아서 정확한 제목, 출처, 링크를 제공해주세요. 
                     
 검색어: ${query}
@@ -1353,13 +1398,13 @@ Please find at least 3 real news headlines. Only provide actual published news, 
 
                 const result = await Promise.race([
                     getGeminiWithGoogleSearch(prompt, language),
-                    new Promise<never>((_, reject) => 
+                    new Promise<never>((_, reject) =>
                         setTimeout(() => reject(new Error('Search timeout')), 15000)
                     )
                 ]);
 
                 return { query, result, index, success: result.searchUsed };
-                
+
             } catch (error) {
                 console.warn(`[Gemini Real News] 검색 ${index + 1} 실패:`, error);
                 return { query, result: null, index, success: false };
@@ -1371,18 +1416,18 @@ Please find at least 3 real news headlines. Only provide actual published news, 
 
         // 🔍 검색 결과에서 실제 뉴스 추출
         searchResults.forEach((promiseResult, searchIndex) => {
-            if (promiseResult.status === 'fulfilled' && 
-                promiseResult.value.result?.response && 
+            if (promiseResult.status === 'fulfilled' &&
+                promiseResult.value.result?.response &&
                 promiseResult.value.success) {
-                
+
                 const { result } = promiseResult.value;
                 const response = result.response;
-                
+
                 console.log(`[Gemini Real News] 검색 ${searchIndex + 1} 응답 길이: ${response.length}자`);
-                
+
                 // 강화된 뉴스 추출
                 const newsArticles = extractEnhancedRealNewsFromGeminiResponse(response, ticker, language);
-                
+
                 if (newsArticles.length > 0) {
                     console.log(`[Gemini Real News] 검색 ${searchIndex + 1}에서 ${newsArticles.length}개 뉴스 추출`);
                     allArticles.push(...newsArticles);
@@ -1400,17 +1445,17 @@ Please find at least 3 real news headlines. Only provide actual published news, 
         // 🎯 중복 제거 및 품질 필터링
         const uniqueArticles = removeDuplicateRealNews(allArticles);
         const qualityArticles = filterQualityNews(uniqueArticles, ticker, companyName);
-        
+
         console.log(`[Gemini Real News] ✅ 최종 ${qualityArticles.length}개 고품질 실제 뉴스 확보 for ${ticker}`);
-        
+
         if (qualityArticles.length === 0) {
             // 폴백: 일반적인 검색 결과 기반 뉴스 생성
             console.log(`[Gemini Real News] 실제 뉴스 없음 - 폴백 뉴스 생성`);
             return generateFallbackRealNews(ticker, companyName, language);
         }
-        
+
         return qualityArticles.slice(0, 6); // 최대 6개로 제한
-        
+
     } catch (error) {
         console.error(`[Gemini Real News] ❌ 전체 검색 실패:`, error);
         return generateFallbackRealNews(ticker, getCompanyName(ticker, language === 'kr'), language);
@@ -1420,12 +1465,12 @@ Please find at least 3 real news headlines. Only provide actual published news, 
 // 🔍 제미나이 구글 검색을 통한 실시간 종목 뉴스 가져오기 함수
 export async function getGeminiStockNews(ticker: string, language: string): Promise<NewsArticle[]> {
     console.log(`[Gemini Enhanced] 🚀 강화된 Gemini 검색 시작 for "${ticker}"`);
-    
+
     try {
         const companyName = getCompanyName(ticker, language === 'kr');
         const currentDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
         const currentYear = new Date().getFullYear();
-        
+
         // 🎯 다중 검색 쿼리 생성 (더 정교하고 다양한 키워드)
         const searchQueries = language === 'kr' ? [
             `${companyName} ${ticker} 최신뉴스 오늘 주가 급등 급락 ${currentDate}`,
@@ -1440,43 +1485,43 @@ export async function getGeminiStockNews(ticker: string, language: string): Prom
             `${companyName} new product launch contract partnership acquisition deal`,
             `${companyName} CEO executive statement conference call investor relations`,
         ];
-        
+
         // 📰 모든 검색 쿼리로 뉴스 수집 (병렬 처리)
         const searchPromises = searchQueries.slice(0, 3).map(async (query, index) => {
             try {
                 console.log(`[Gemini Enhanced] 검색 ${index + 1}: ${query}`);
-                
+
                 const result = await Promise.race([
                     getGeminiWithGoogleSearch(query, language),
-                    new Promise<never>((_, reject) => 
+                    new Promise<never>((_, reject) =>
                         setTimeout(() => reject(new Error('Search timeout')), 8000)
                     )
                 ]);
-                
+
                 return { query, result, index };
             } catch (error) {
                 console.warn(`[Gemini Enhanced] 검색 ${index + 1} 실패:`, error);
                 return { query, result: null, index };
             }
         });
-        
-                 const searchResults = await Promise.allSettled(searchPromises);
-         const articles: any[] = [];
-        
+
+        const searchResults = await Promise.allSettled(searchPromises);
+        const articles: any[] = [];
+
         // 📊 검색 결과 처리 및 뉴스 아티클 생성
         searchResults.forEach((promiseResult, searchIndex) => {
             if (promiseResult.status === 'fulfilled' && promiseResult.value.result?.response) {
                 const { query, result } = promiseResult.value;
                 const response = result.response;
-                
+
                 // 🔍 더 정교한 뉴스 파싱
                 const newsItems = extractNewsFromGeminiResponse(response, companyName, ticker, language);
-                
+
                 newsItems.forEach((item, itemIndex) => {
                     // 🏷️ 검색 쿼리별 카테고리 분류
                     let category = 'stock';
                     let priority = searchIndex; // 검색 순서가 우선순위
-                    
+
                     if (query.includes('실적') || query.includes('earnings')) {
                         category = 'earnings';
                         priority -= 1; // 실적 뉴스는 우선순위 높임
@@ -1485,28 +1530,28 @@ export async function getGeminiStockNews(ticker: string, language: string): Prom
                     } else if (query.includes('신제품') || query.includes('product')) {
                         category = 'product';
                     }
-                    
-                                         const article: any = {
-                         title: item.title,
-                         summary: item.summary,
-                         content: item.content,
-                         url: `https://www.google.com/search?q=${encodeURIComponent(query)}`,
-                         publishedAt: new Date().toISOString(),
-                         source: language === 'kr' ? 'Gemini 강화 검색' : 'Gemini Enhanced Search',
-                         language: language, // 🌍 사용자 요청 언어에 따라 설정 (Gemini 생성 뉴스)
-                         ticker: ticker,
-                         category: category,
-                         sentiment: analyzeSentiment(item.content, language),
-                         isGeminiGenerated: true,
-                         priority: priority, // 정렬을 위한 우선순위
-                         searchQuery: query.substring(0, 50) + '...', // 어떤 검색으로 찾았는지
-                         timestamp: Date.now() - (itemIndex * 1000) // 미세한 시간 차이로 순서 보장
-                     };
-                     articles.push(article);
+
+                    const article: any = {
+                        title: item.title,
+                        summary: item.summary,
+                        content: item.content,
+                        url: `https://www.google.com/search?q=${encodeURIComponent(query)}`,
+                        publishedAt: new Date().toISOString(),
+                        source: language === 'kr' ? 'Gemini 강화 검색' : 'Gemini Enhanced Search',
+                        language: language, // 🌍 사용자 요청 언어에 따라 설정 (Gemini 생성 뉴스)
+                        ticker: ticker,
+                        category: category,
+                        sentiment: analyzeSentiment(item.content, language),
+                        isGeminiGenerated: true,
+                        priority: priority, // 정렬을 위한 우선순위
+                        searchQuery: query.substring(0, 50) + '...', // 어떤 검색으로 찾았는지
+                        timestamp: Date.now() - (itemIndex * 1000) // 미세한 시간 차이로 순서 보장
+                    };
+                    articles.push(article);
                 });
             }
         });
-        
+
         // 🔥 최종 정렬 및 중복 제거
         const finalArticles = articles
             .sort((a, b) => {
@@ -1520,32 +1565,32 @@ export async function getGeminiStockNews(ticker: string, language: string): Prom
                 const { priority, timestamp, ...cleanArticle } = article;
                 return cleanArticle;
             });
-        
+
         console.log(`[Gemini Enhanced] ✅ ${finalArticles.length}개 고품질 뉴스 생성 완료 for ${ticker}`);
-        
+
         // 📊 결과 품질 리포트
         const categories = [...new Set(finalArticles.map(a => a.category))];
         const sentiments = finalArticles.map(a => a.sentiment).filter(Boolean);
         console.log(`[Gemini Enhanced] 📊 카테고리: ${categories.join(', ')}, 감정: ${sentiments.join(', ')}`);
-        
+
         return finalArticles;
-        
+
     } catch (error) {
         console.error(`[Gemini Enhanced] ❌ 전체 검색 실패 for ${ticker}:`, error);
-        
+
         // 🛡️ 폴백: 기본 검색으로 대체
         try {
             const companyName = getCompanyName(ticker, language === 'kr');
-            const fallbackQuery = language === 'kr' 
+            const fallbackQuery = language === 'kr'
                 ? `${companyName} ${ticker} 최신뉴스 주가`
                 : `${companyName} ${ticker} latest news stock`;
-            
+
             const fallbackResult = await getGeminiWithGoogleSearch(fallbackQuery, language);
-            
+
             if (fallbackResult.response) {
                 const fallbackItems = extractNewsFromGeminiResponse(fallbackResult.response, companyName, ticker, language);
                 console.log(`[Gemini Enhanced] 🛡️ 폴백 검색으로 ${fallbackItems.length}개 뉴스 확보`);
-                
+
                 return fallbackItems.slice(0, 3).map(item => ({
                     title: item.title,
                     summary: item.summary,
@@ -1563,7 +1608,7 @@ export async function getGeminiStockNews(ticker: string, language: string): Prom
         } catch (fallbackError) {
             console.error(`[Gemini Enhanced] ❌ 폴백 검색도 실패:`, fallbackError);
         }
-        
+
         return [];
     }
 }
@@ -1571,20 +1616,20 @@ export async function getGeminiStockNews(ticker: string, language: string): Prom
 // 🔗 제미나이 응답에서 실제 뉴스 링크 추출 함수
 function extractRealNewsFromGeminiResponse(response: string, ticker: string, language: string): NewsArticle[] {
     const articles: NewsArticle[] = [];
-    
+
     try {
         // 🎯 뉴스 블록 패턴으로 분리
         const newsBlocks = response.split(/\[뉴스\d+\]|\[News\d+\]/i);
-        
+
         newsBlocks.slice(1).forEach((block, index) => {
             try {
                 const lines = block.trim().split('\n').map(line => line.trim()).filter(line => line);
-                
+
                 let title = '';
                 let source = '';
                 let url = '';
                 let summary = '';
-                
+
                 // 📝 각 라인에서 정보 추출
                 lines.forEach(line => {
                     if (line.match(/제목[:：]\s*(.+)|Title[:：]\s*(.+)/i)) {
@@ -1597,19 +1642,19 @@ function extractRealNewsFromGeminiResponse(response: string, ticker: string, lan
                         summary = line.replace(/요약[:：]\s*|Summary[:：]\s*/i, '').trim();
                     }
                 });
-                
+
                 // 🔍 URL 유효성 검증 및 정리
                 if (url && !url.startsWith('http')) {
                     // URL이 완전하지 않으면 검색 링크로 대체
                     const searchTerm = encodeURIComponent(`${title} ${source}`);
                     url = `https://www.google.com/search?q=${searchTerm}`;
                 }
-                
+
                 // ✅ 필수 필드가 있으면 뉴스 아티클 생성
                 if (title && title.length > 10 && source) {
                     const finalUrl = url || `https://www.google.com/search?q=${encodeURIComponent(title)}`;
                     const newsLanguage = detectLanguageFromUrl(finalUrl);
-                    
+
                     articles.push({
                         title: decodeHtmlEntities(title),
                         summary: decodeHtmlEntities(summary || title.substring(0, 150) + '...'),
@@ -1629,26 +1674,26 @@ function extractRealNewsFromGeminiResponse(response: string, ticker: string, lan
                 console.warn(`[Gemini Real News] 뉴스 블록 ${index + 1} 파싱 실패:`, blockError);
             }
         });
-        
+
         // 📊 URL 패턴으로도 추가 추출 시도
         const urlMatches = response.match(/https?:\/\/[^\s\)]+/g);
         if (urlMatches && urlMatches.length > 0) {
             console.log(`[Gemini Real News] 추가로 ${urlMatches.length}개 URL 발견`);
-            
+
             urlMatches.slice(0, 3).forEach((url, index) => {
                 if (!articles.find(article => article.url === url)) {
                     // URL 주변 텍스트에서 제목 추출 시도
                     const urlIndex = response.indexOf(url);
                     const beforeUrl = response.substring(Math.max(0, urlIndex - 200), urlIndex);
                     const afterUrl = response.substring(urlIndex + url.length, urlIndex + url.length + 200);
-                    
+
                     const possibleTitle = (beforeUrl + afterUrl)
                         .split(/\n|\./)
                         .find(line => line.trim().length > 20 && line.trim().length < 200)?.trim();
-                    
+
                     if (possibleTitle) {
                         const newsLanguage = detectLanguageFromUrl(url);
-                        
+
                         articles.push({
                             title: decodeHtmlEntities(possibleTitle),
                             summary: decodeHtmlEntities(possibleTitle.substring(0, 150) + '...'),
@@ -1667,44 +1712,44 @@ function extractRealNewsFromGeminiResponse(response: string, ticker: string, lan
                 }
             });
         }
-        
+
     } catch (error) {
         console.error('[Gemini Real News] 응답 파싱 실패:', error);
     }
-    
+
     return articles.slice(0, 8); // 최대 8개로 제한
 }
 
 // 🔍 강화된 실제 뉴스 추출 함수
 function extractEnhancedRealNewsFromGeminiResponse(response: string, ticker: string, language: string): NewsArticle[] {
     const articles: NewsArticle[] = [];
-    
+
     try {
         // 📰 numbered list 패턴 매칭 (1. 2. 3. 형태)
         const numberedPattern = /(\d+)\.\s*제목:\s*(.+?)\s*출처:\s*(.+?)\s*링크:\s*(.+?)\s*내용:\s*(.+?)(?=\d+\.|$)/g;
         const englishNumberedPattern = /(\d+)\.\s*Title:\s*(.+?)\s*Source:\s*(.+?)\s*Link:\s*(.+?)\s*Content:\s*(.+?)(?=\d+\.|$)/g;
-        
+
         const patterns = language === 'kr' ? [numberedPattern] : [englishNumberedPattern, numberedPattern];
         const articlesWithPriority: (NewsArticle & { priority: number })[] = [];
-        
+
         patterns.forEach(pattern => {
             let match;
             while ((match = pattern.exec(response)) !== null) {
                 const [, number, title, source, link, content] = match;
-                
+
                 if (title && title.trim().length > 10 && source && source.trim()) {
                     const cleanTitle = cleanText(title);
                     const cleanSource = cleanText(source);
                     const cleanLink = cleanUrl(link);
                     const cleanContent = cleanText(content);
-                    
+
                     // URL 검증 및 수정
-                    const finalUrl = isValidUrl(cleanLink) 
-                        ? cleanLink 
+                    const finalUrl = isValidUrl(cleanLink)
+                        ? cleanLink
                         : `https://www.google.com/search?q=${encodeURIComponent(cleanTitle + ' ' + cleanSource)}`;
-                    
+
                     const newsLanguage = detectLanguageFromUrl(finalUrl);
-                    
+
                     articlesWithPriority.push({
                         title: cleanTitle,
                         summary: cleanContent.substring(0, 200) + (cleanContent.length > 200 ? '...' : ''),
@@ -1723,32 +1768,32 @@ function extractEnhancedRealNewsFromGeminiResponse(response: string, ticker: str
                 }
             }
         });
-        
+
         // 📰 다른 패턴들도 시도
         if (articlesWithPriority.length === 0) {
             // 제목: ... 출처: ... 형태
             const alternativePattern = /제목:\s*(.+?)\s*출처:\s*(.+?)\s*(?:링크:\s*(.+?))?\s*(?:내용|요약):\s*(.+?)(?=제목:|출처:|$)/g;
             const englishAltPattern = /Title:\s*(.+?)\s*Source:\s*(.+?)\s*(?:Link:\s*(.+?))?\s*(?:Content|Summary):\s*(.+?)(?=Title:|Source:|$)/g;
-            
+
             const altPatterns = language === 'kr' ? [alternativePattern] : [englishAltPattern, alternativePattern];
-            
+
             altPatterns.forEach(pattern => {
                 let match;
                 while ((match = pattern.exec(response)) !== null) {
                     const [, title, source, link, content] = match;
-                    
+
                     if (title && title.trim().length > 10) {
                         const cleanTitle = cleanText(title);
                         const cleanSource = cleanText(source || 'Unknown Source');
                         const cleanLink = cleanUrl(link || '');
                         const cleanContent = cleanText(content || title);
-                        
-                        const finalUrl = isValidUrl(cleanLink) 
-                            ? cleanLink 
+
+                        const finalUrl = isValidUrl(cleanLink)
+                            ? cleanLink
                             : `https://www.google.com/search?q=${encodeURIComponent(cleanTitle)}`;
-                        
+
                         const newsLanguage = detectLanguageFromUrl(finalUrl);
-                        
+
                         articlesWithPriority.push({
                             title: cleanTitle,
                             summary: cleanContent.substring(0, 200) + (cleanContent.length > 200 ? '...' : ''),
@@ -1768,43 +1813,43 @@ function extractEnhancedRealNewsFromGeminiResponse(response: string, ticker: str
                 }
             });
         }
-        
+
         // priority 속성 제거하고 정렬된 순서로 반환
         articles.push(...articlesWithPriority
             .sort((a, b) => a.priority - b.priority)
             .map(({ priority, ...article }) => article));
-        
+
     } catch (error) {
         console.error('[Gemini Real News] 강화된 파싱 실패:', error);
     }
-    
+
     return articles;
 }
 
 // 🔄 대안 뉴스 추출 함수 (일반 텍스트에서)
 function extractAlternativeNewsFromResponse(response: string, ticker: string, companyName: string, language: string): NewsArticle[] {
     const articles: NewsArticle[] = [];
-    
+
     try {
         // 문장 단위로 분리하여 뉴스성 문장 찾기
-        const sentences = response.split(/[.!?।]\s+/).filter(sentence => 
-            sentence.trim().length > 30 && 
+        const sentences = response.split(/[.!?।]\s+/).filter(sentence =>
+            sentence.trim().length > 30 &&
             (sentence.includes(ticker) || sentence.includes(companyName))
         );
-        
+
         sentences.slice(0, 5).forEach((sentence, index) => {
             const cleanSentence = sentence.trim();
-            
+
             if (cleanSentence.length > 20 && cleanSentence.length < 300) {
                 // 뉴스성 키워드 확인
-                const newsKeywords = language === 'kr' 
+                const newsKeywords = language === 'kr'
                     ? ['뉴스', '발표', '보고', '증가', '감소', '상승', '하락', '계획', '예정', '실적', '매출']
                     : ['news', 'announced', 'reported', 'increased', 'decreased', 'rose', 'fell', 'plans', 'earnings', 'revenue'];
-                
-                const hasNewsKeyword = newsKeywords.some(keyword => 
+
+                const hasNewsKeyword = newsKeywords.some(keyword =>
                     cleanSentence.toLowerCase().includes(keyword.toLowerCase())
                 );
-                
+
                 if (hasNewsKeyword) {
                     articles.push({
                         title: generateNewsTitle(cleanSentence, companyName, language, index),
@@ -1823,11 +1868,11 @@ function extractAlternativeNewsFromResponse(response: string, ticker: string, co
                 }
             }
         });
-        
+
     } catch (error) {
         console.error('[Gemini Real News] 대안 추출 실패:', error);
     }
-    
+
     return articles;
 }
 
@@ -1853,24 +1898,24 @@ function decodeHtmlEntities(text: string): string {
         '&rsquo;': "'",
         '&hellip;': '...'
     };
-    
+
     let decodedText = text;
-    
+
     // HTML 엔티티 디코딩
     Object.keys(htmlEntities).forEach(entity => {
         decodedText = decodedText.replace(new RegExp(entity, 'g'), htmlEntities[entity]);
     });
-    
+
     // 숫자 형태의 HTML 엔티티도 디코딩
     decodedText = decodedText.replace(/&#(\d+);/g, (match, dec) => {
         return String.fromCharCode(dec);
     });
-    
+
     // 16진수 형태의 HTML 엔티티도 디코딩
     decodedText = decodedText.replace(/&#x([0-9A-Fa-f]+);/g, (match, hex) => {
         return String.fromCharCode(parseInt(hex, 16));
     });
-    
+
     return decodedText;
 }
 
@@ -1915,18 +1960,18 @@ function isValidUrl(url: string): boolean {
 function removeDuplicateRealNews(articles: NewsArticle[]): NewsArticle[] {
     const seen = new Set<string>();
     const unique: NewsArticle[] = [];
-    
+
     for (const article of articles) {
         const titleKey = article.title.toLowerCase().replace(/[^\w]/g, '').substring(0, 50);
         const urlKey = article.url;
-        
+
         if (!seen.has(titleKey) && !seen.has(urlKey)) {
             seen.add(titleKey);
             seen.add(urlKey);
             unique.push(article);
         }
     }
-    
+
     return unique;
 }
 
@@ -1935,17 +1980,17 @@ function filterQualityNews(articles: NewsArticle[], ticker: string, companyName:
     return articles.filter(article => {
         // 제목 길이 검증
         if (article.title.length < 10 || article.title.length > 200) return false;
-        
+
         // 관련성 검증
         const titleLower = article.title.toLowerCase();
         const tickerLower = ticker.toLowerCase();
         const companyLower = companyName.toLowerCase();
-        
-        const isRelevant = titleLower.includes(tickerLower) || 
-                          titleLower.includes(companyLower) ||
-                          (article.content && article.content.toLowerCase().includes(tickerLower)) ||
-                          (article.content && article.content.toLowerCase().includes(companyLower));
-        
+
+        const isRelevant = titleLower.includes(tickerLower) ||
+            titleLower.includes(companyLower) ||
+            (article.content && article.content.toLowerCase().includes(tickerLower)) ||
+            (article.content && article.content.toLowerCase().includes(companyLower));
+
         return isRelevant;
     });
 }
@@ -1953,7 +1998,7 @@ function filterQualityNews(articles: NewsArticle[], ticker: string, companyName:
 // 🛡️ 폴백 실제 뉴스 생성 함수
 function generateFallbackRealNews(ticker: string, companyName: string, language: string): NewsArticle[] {
     const currentDate = new Date().toISOString();
-    
+
     const fallbackNews = language === 'kr' ? [
         {
             title: `${companyName}(${ticker}) 최신 주가 동향 및 시장 분석`,
@@ -1987,7 +2032,7 @@ function generateFallbackRealNews(ticker: string, companyName: string, language:
             source: 'Gemini Company Analysis'
         }
     ];
-    
+
     return fallbackNews.map((news, index) => ({
         title: news.title,
         summary: news.content,
@@ -2008,7 +2053,7 @@ function generateFallbackRealNews(ticker: string, companyName: string, language:
 function extractSourceFromUrl(url: string): string {
     try {
         const domain = new URL(url).hostname;
-        
+
         const sourceMap: Record<string, string> = {
             'reuters.com': 'Reuters',
             'bloomberg.com': 'Bloomberg',
@@ -2024,22 +2069,22 @@ function extractSourceFromUrl(url: string): string {
             'tesla.com': 'Tesla Official',
             'sec.gov': 'SEC Filing'
         };
-        
+
         for (const [domainKey, sourceName] of Object.entries(sourceMap)) {
             if (domain.includes(domainKey)) {
                 return sourceName;
             }
         }
-        
+
         // 도메인에서 회사명 추출
         const domainParts = domain.split('.');
         if (domainParts.length >= 2) {
-            return domainParts[domainParts.length - 2].charAt(0).toUpperCase() + 
-                   domainParts[domainParts.length - 2].slice(1);
+            return domainParts[domainParts.length - 2].charAt(0).toUpperCase() +
+                domainParts[domainParts.length - 2].slice(1);
         }
-        
+
         return domain;
-        
+
     } catch (error) {
         return 'Unknown Source';
     }
@@ -2049,7 +2094,7 @@ function extractSourceFromUrl(url: string): string {
 function detectLanguageFromUrl(url: string): string {
     try {
         const domain = new URL(url).hostname;
-        
+
         // 🇰🇷 한국 사이트들
         const koreanSites = [
             'naver.com', 'daum.net', 'chosun.com', 'joongang.co.kr', 'donga.com',
@@ -2057,7 +2102,7 @@ function detectLanguageFromUrl(url: string): string {
             'mbc.co.kr', 'jtbc.co.kr', 'financialnews.co.kr', 'etnews.com',
             'zdnet.co.kr', 'it.chosun.com', 'biz.chosun.com'
         ];
-        
+
         // 🌍 해외 사이트들 (영어)
         const internationalSites = [
             'reuters.com', 'bloomberg.com', 'cnbc.com', 'marketwatch.com',
@@ -2065,29 +2110,29 @@ function detectLanguageFromUrl(url: string): string {
             'barrons.com', 'nasdaq.com', 'sec.gov', 'tesla.com',
             'news.google.com', 'ap.org', 'bbc.com', 'cnn.com'
         ];
-        
+
         // 한국 사이트 확인
         for (const koreanSite of koreanSites) {
             if (domain.includes(koreanSite)) {
                 return 'kr';
             }
         }
-        
+
         // 해외 사이트 확인
         for (const intlSite of internationalSites) {
             if (domain.includes(intlSite)) {
                 return 'en';
             }
         }
-        
+
         // 기본값: 도메인 확장자로 판단
         if (domain.endsWith('.kr') || domain.includes('korea')) {
             return 'kr';
         }
-        
+
         // 기본값: 해외 사이트로 간주
         return 'en';
-        
+
     } catch (error) {
         return 'en'; // 기본값: 영어
     }
@@ -2097,7 +2142,7 @@ function detectLanguageFromUrl(url: string): string {
 function getTeslaFallbackNews(ticker: string, language: string): NewsArticle[] {
     const currentDate = new Date().toISOString();
     const companyName = getCompanyName(ticker, language === 'kr');
-    
+
     if (ticker.toUpperCase() === 'TSLA') {
         return language === 'kr' ? [
             {
@@ -2155,14 +2200,14 @@ function getTeslaFallbackNews(ticker: string, language: string): NewsArticle[] {
             }
         ];
     }
-    
+
     // 다른 종목들을 위한 해외 뉴스 검색 폴백
     return [{
         title: language === 'kr' ? `${companyName} 해외 뉴스 검색` : `${companyName} International News Search`,
-        summary: language === 'kr' ? 
+        summary: language === 'kr' ?
             `${companyName}(${ticker})의 해외 언론 보도를 확인하려면 링크를 클릭하세요.` :
             `Click the link to check international news coverage for ${companyName} (${ticker}).`,
-        content: language === 'kr' ? 
+        content: language === 'kr' ?
             `Bloomberg, Reuters 등 해외 주요 언론사의 ${companyName} 관련 뉴스를 확인할 수 있습니다.` :
             `Check news about ${companyName} from major international outlets like Bloomberg and Reuters.`,
         url: `https://www.google.com/search?q=${encodeURIComponent(`${companyName} ${ticker} site:bloomberg.com OR site:reuters.com OR site:cnbc.com`)}`,
@@ -2177,29 +2222,29 @@ function getTeslaFallbackNews(ticker: string, language: string): NewsArticle[] {
 }
 
 // 🧠 Gemini 응답에서 뉴스 추출하는 향상된 함수
-function extractNewsFromGeminiResponse(response: string, companyName: string, ticker: string, language: string): Array<{title: string, summary: string, content: string}> {
-    const newsItems: Array<{title: string, summary: string, content: string}> = [];
-    
+function extractNewsFromGeminiResponse(response: string, companyName: string, ticker: string, language: string): Array<{ title: string, summary: string, content: string }> {
+    const newsItems: Array<{ title: string, summary: string, content: string }> = [];
+
     // 📰 문단별로 나누기 (개행 문자나 특정 패턴으로)
     const paragraphs = response.split(/\n\n|\. (?=[A-Z가-힣])/g)
         .map(p => p.trim())
         .filter(p => p.length > 50 && (p.includes(companyName) || p.includes(ticker)));
-    
+
     // 🎯 각 문단을 뉴스 아이템으로 변환
     paragraphs.slice(0, 4).forEach((paragraph, index) => {
         const sentences = paragraph.split(/[.!?]\s+/).filter(s => s.trim().length > 20);
-        
+
         if (sentences.length > 0) {
             // 제목 생성 (첫 번째 문장에서 핵심만 추출)
             const firstSentence = sentences[0].trim();
             const title = generateNewsTitle(firstSentence, companyName, language, index + 1);
-            
+
             // 요약 생성 (처음 2-3문장)
             const summary = sentences.slice(0, 2).join('. ').trim();
-            
+
             // 전체 내용
             const content = paragraph.trim();
-            
+
             if (title && summary && content.length > 80) {
                 newsItems.push({
                     title: title,
@@ -2209,21 +2254,21 @@ function extractNewsFromGeminiResponse(response: string, companyName: string, ti
             }
         }
     });
-    
+
     return newsItems;
 }
 
 // 📰 뉴스 제목 생성 함수
 function generateNewsTitle(sentence: string, companyName: string, language: string, index: number): string {
     // 핵심 키워드 추출
-    const keywords = language === 'kr' ? 
+    const keywords = language === 'kr' ?
         ['주가', '실적', '매출', '이익', '전망', '발표', '계약', '출시', '투자'] :
         ['stock', 'earnings', 'revenue', 'profit', 'forecast', 'announces', 'contract', 'launch', 'investment'];
-    
-    const foundKeyword = keywords.find(keyword => 
+
+    const foundKeyword = keywords.find(keyword =>
         sentence.toLowerCase().includes(keyword.toLowerCase())
     );
-    
+
     if (foundKeyword) {
         // 키워드가 있으면 해당 키워드 중심으로 제목 생성
         const prefix = language === 'kr' ? '[속보]' : '[Breaking]';
@@ -2239,19 +2284,19 @@ function generateNewsTitle(sentence: string, companyName: string, language: stri
 
 // 💭 간단한 감정 분석 함수
 function analyzeSentiment(content: string, language: string): 'positive' | 'negative' | 'neutral' {
-    const positiveWords = language === 'kr' ? 
+    const positiveWords = language === 'kr' ?
         ['상승', '급등', '호재', '성장', '증가', '개선', '긍정', '성공', '상향', '급등'] :
         ['up', 'rise', 'gain', 'growth', 'increase', 'improve', 'positive', 'success', 'bullish', 'surge'];
-    
-    const negativeWords = language === 'kr' ? 
+
+    const negativeWords = language === 'kr' ?
         ['하락', '급락', '악재', '감소', '하향', '부정', '실패', '손실', '하락', '급락'] :
         ['down', 'fall', 'loss', 'decline', 'decrease', 'negative', 'failure', 'bearish', 'drop', 'plunge'];
-    
+
     const contentLower = content.toLowerCase();
-    
+
     const positiveCount = positiveWords.filter(word => contentLower.includes(word.toLowerCase())).length;
     const negativeCount = negativeWords.filter(word => contentLower.includes(word.toLowerCase())).length;
-    
+
     if (positiveCount > negativeCount && positiveCount > 0) return 'positive';
     if (negativeCount > positiveCount && negativeCount > 0) return 'negative';
     return 'neutral';
@@ -2264,53 +2309,53 @@ const UPDATE_INTERVAL = 30 * 60 * 1000; // 30분마다 업데이트
 
 // 뉴스 업데이트 상태 관리
 interface NewsUpdateStatus {
-  isUpdating: boolean;
-  lastUpdate: number;
-  nextUpdate: number;
-  successCount: number;
-  errorCount: number;
+    isUpdating: boolean;
+    lastUpdate: number;
+    nextUpdate: number;
+    successCount: number;
+    errorCount: number;
 }
 
 let updateStatus: NewsUpdateStatus = {
-  isUpdating: false,
-  lastUpdate: 0,
-  nextUpdate: 0,
-  successCount: 0,
-  errorCount: 0
+    isUpdating: false,
+    lastUpdate: 0,
+    nextUpdate: 0,
+    successCount: 0,
+    errorCount: 0
 };
 
 // 🔥 개선된 주기적 뉴스 업데이트 시스템
 export async function startPeriodicNewsUpdate(): Promise<{ success: boolean; message: string; status: NewsUpdateStatus }> {
     console.log(`[News Update] Starting periodic news update system`);
-    
+
     try {
         // 기존 인터벌 정리
         if (newsUpdateInterval) {
             clearInterval(newsUpdateInterval);
         }
-        
+
         // 즉시 한 번 업데이트 실행
         await performNewsUpdate();
-        
+
         // 주기적 업데이트 설정
         newsUpdateInterval = setInterval(async () => {
             await performNewsUpdate();
         }, UPDATE_INTERVAL);
-        
+
         updateStatus.nextUpdate = Date.now() + UPDATE_INTERVAL;
-        
-        console.log(`[News Update] ✅ Periodic update started (every ${UPDATE_INTERVAL/1000/60} minutes)`);
-        
+
+        console.log(`[News Update] ✅ Periodic update started (every ${UPDATE_INTERVAL / 1000 / 60} minutes)`);
+
         return {
             success: true,
-            message: `주기적 뉴스 업데이트가 시작되었습니다 (${UPDATE_INTERVAL/1000/60}분마다)`,
+            message: `주기적 뉴스 업데이트가 시작되었습니다 (${UPDATE_INTERVAL / 1000 / 60}분마다)`,
             status: updateStatus
         };
-        
+
     } catch (error) {
         console.error(`[News Update] Failed to start periodic update:`, error);
         updateStatus.errorCount++;
-        
+
         return {
             success: false,
             message: `주기적 업데이트 시작 실패: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -2322,40 +2367,40 @@ export async function startPeriodicNewsUpdate(): Promise<{ success: boolean; mes
 // 🔄 실제 뉴스 업데이트 수행
 async function performNewsUpdate(): Promise<void> {
     const now = Date.now();
-    
+
     // 중복 업데이트 방지 (5분 이내 재실행 금지)
     if (updateStatus.isUpdating || (now - lastUpdateTime) < 5 * 60 * 1000) {
         console.log(`[News Update] Skipping update (already updating or too recent)`);
         return;
     }
-    
+
     updateStatus.isUpdating = true;
     lastUpdateTime = now;
-    
+
     console.log(`[News Update] 🔄 Performing scheduled news update`);
-    
+
     try {
         // 최신 GitBook 뉴스 업데이트
-        const latestNews = await getGitBookLatestNews('kr');
-        
-        if (latestNews && latestNews.length > 0) {
-            console.log(`[News Update] ✅ Successfully updated ${latestNews.length} news articles`);
+        const { marketNews, wallStreetComments, schedule, scheduleTitle } = await getGitBookLatestNews('kr');
+
+        if (marketNews && marketNews.length > 0) {
+            console.log(`[News Update] ✅ Successfully updated ${marketNews.length} news articles`);
             updateStatus.successCount++;
             updateStatus.lastUpdate = now;
-            
+
             // 일정 정보가 있으면 전역 변수 업데이트
-            const scheduleArticle = latestNews.find(article => article.schedule && article.schedule.length > 0);
+            const scheduleArticle = marketNews.find(article => article.schedule && article.schedule.length > 0);
             if (scheduleArticle && scheduleArticle.schedule) {
                 if (typeof window !== 'undefined') {
                     (window as any).upcomingMarketSchedule = scheduleArticle.schedule;
                     console.log(`[News Update] ✅ Updated market schedule (${scheduleArticle.schedule.length} items)`);
                 }
             }
-            
+
         } else {
             console.warn(`[News Update] ⚠️ No news articles received`);
         }
-        
+
     } catch (error) {
         console.error(`[News Update] ❌ Update failed:`, error);
         updateStatus.errorCount++;
@@ -2368,13 +2413,13 @@ async function performNewsUpdate(): Promise<void> {
 // 🔄 뉴스 업데이트 중단
 export async function stopPeriodicNewsUpdate(): Promise<{ success: boolean; message: string; status: NewsUpdateStatus }> {
     console.log(`[News Update] Stopping periodic news update`);
-    
+
     if (newsUpdateInterval) {
         clearInterval(newsUpdateInterval);
         newsUpdateInterval = null;
-        
+
         console.log(`[News Update] ✅ Periodic update stopped`);
-        
+
         return {
             success: true,
             message: "주기적 뉴스 업데이트가 중단되었습니다",
@@ -2396,7 +2441,7 @@ export async function getNewsUpdateStatus(): Promise<NewsUpdateStatus & {
     lastUpdateAgo: number;
 }> {
     const now = Date.now();
-    
+
     return {
         ...updateStatus,
         isActive: newsUpdateInterval !== null,
@@ -2408,7 +2453,7 @@ export async function getNewsUpdateStatus(): Promise<NewsUpdateStatus & {
 // 🔄 수동 뉴스 새로고침
 export async function refreshLatestNews(force: boolean = false): Promise<{ success: boolean; message: string; data?: any }> {
     console.log(`[News Refresh] Manual news refresh requested (force: ${force})`);
-    
+
     try {
         // 강제 모드가 아니면 최근 업데이트 체크
         const now = Date.now();
@@ -2418,39 +2463,39 @@ export async function refreshLatestNews(force: boolean = false): Promise<{ succe
                 message: "최근에 업데이트되었습니다. 2분 후에 다시 시도하세요."
             };
         }
-        
+
         // 최신 뉴스 가져오기
-        const latestNews = await getGitBookLatestNews('kr');
-        
-        if (latestNews && latestNews.length > 0) {
+        const { marketNews, wallStreetComments, schedule, scheduleTitle } = await getGitBookLatestNews('kr');
+
+        if (marketNews && marketNews.length > 0) {
             lastUpdateTime = now;
             updateStatus.lastUpdate = now;
             updateStatus.successCount++;
-            
-            console.log(`[News Refresh] ✅ Successfully refreshed ${latestNews.length} news articles`);
-            
+
+            console.log(`[News Refresh] ✅ Successfully refreshed ${marketNews.length} news articles`);
+
             return {
                 success: true,
-                message: `${latestNews.length}개의 최신 뉴스를 업데이트했습니다`,
+                message: `${marketNews.length}개의 최신 뉴스를 업데이트했습니다`,
                 data: {
-                    newsCount: latestNews.length,
-                    hasSchedule: latestNews.some(article => article.schedule && article.schedule.length > 0),
+                    newsCount: marketNews.length,
+                    hasSchedule: marketNews.some(article => article.schedule && article.schedule.length > 0),
                     updateTime: now
                 }
             };
         } else {
             updateStatus.errorCount++;
-            
+
             return {
                 success: false,
                 message: "뉴스를 가져올 수 없습니다"
             };
         }
-        
+
     } catch (error) {
         console.error(`[News Refresh] Error:`, error);
         updateStatus.errorCount++;
-        
+
         return {
             success: false,
             message: `뉴스 새로고침 실패: ${error instanceof Error ? error.message : 'Unknown error'}`
@@ -2458,27 +2503,218 @@ export async function refreshLatestNews(force: boolean = false): Promise<{ succe
     }
 }
 
+// 🔍 특정 뉴스 기사의 세부 내용 추출 함수 (GitBook 페이지에서)
+function extractSpecificNewsContent(html: string, targetTitle: string): { content: string } {
+    try {
+        console.log(`[Extract Specific] 특정 뉴스 내용 추출 시작: "${targetTitle.substring(0, 30)}..."`);
+
+        // JSDOM으로 HTML 파싱
+        const { JSDOM } = require('jsdom');
+        const dom = new JSDOM(html);
+        const document = dom.window.document;
+
+        // 🔥 "(원문)" 텍스트 필터링 - 제목에서 먼저 제거
+        const cleanTargetTitle = targetTitle
+            .replace(/\s*\(원문\)\s*/g, '')
+            .replace(/\s*원문\s*/g, '')
+            .trim();
+
+        console.log(`[Extract Specific] 정리된 제목: "${cleanTargetTitle}"`);
+
+        // h2 태그들을 찾아서 해당 제목과 매칭
+        const h2Elements = Array.from(document.querySelectorAll('h2'));
+        let targetH2: Element | null = null;
+        let bestMatch = 0;
+        let bestH2: Element | null = null;
+
+        // 제목 매칭 (부분 일치 허용, 더 정확한 매칭 알고리즘)
+        for (const h2 of h2Elements) {
+            let h2Text = (h2 as Element).textContent?.trim() || '';
+
+            // 🔥 h2에서도 "(원문)" 제거
+            h2Text = h2Text
+                .replace(/\s*\(원문\)\s*/g, '')
+                .replace(/\s*원문\s*/g, '')
+                .trim();
+
+            // 정확한 매칭 우선
+            if (h2Text === cleanTargetTitle) {
+                targetH2 = h2 as Element;
+                console.log(`[Extract Specific] ✅ 정확한 매칭 발견: "${h2Text}"`);
+                break;
+            }
+
+            // 부분 매칭 계산
+            const titleWords = cleanTargetTitle.toLowerCase().split(/\s+/).filter((word: string) => word.length > 1);
+            const h2Words = h2Text.toLowerCase().split(/\s+/).filter((word: string) => word.length > 1);
+
+            let matchScore = 0;
+            for (const titleWord of titleWords) {
+                for (const h2Word of h2Words) {
+                    if (titleWord === h2Word) {
+                        matchScore += 2; // 정확한 단어 매칭
+                    } else if (titleWord.includes(h2Word) || h2Word.includes(titleWord)) {
+                        matchScore += 1; // 부분 매칭
+                    }
+                }
+            }
+
+            // 길이 유사성도 고려
+            const lengthSimilarity = 1 - Math.abs(titleWords.length - h2Words.length) / Math.max(titleWords.length, h2Words.length);
+            matchScore += lengthSimilarity;
+
+            if (matchScore > bestMatch && matchScore >= 2) {
+                bestMatch = matchScore;
+                bestH2 = h2 as Element;
+            }
+        }
+
+        // 최적 매칭 사용
+        if (!targetH2 && bestH2) {
+            targetH2 = bestH2;
+            console.log(`[Extract Specific] ✅ 부분 매칭 발견 (점수: ${bestMatch}): "${(bestH2 as Element).textContent?.trim()}"`);
+        }
+
+        if (!targetH2) {
+            console.log(`[Extract Specific] ❌ 매칭되는 h2 태그를 찾지 못함`);
+
+            // 🔍 대체 방법: blockquote 태그에서 본문 찾기
+            const blockquotes = Array.from(document.querySelectorAll('blockquote'));
+            for (const blockquote of blockquotes) {
+                const blockText = (blockquote as Element).textContent?.trim() || '';
+                if (blockText.length > 100) {
+                    console.log(`[Extract Specific] 📝 blockquote에서 대체 내용 발견: ${blockText.length} chars`);
+                    return {
+                        content: blockText
+                            .replace(/\s*\(원문\)\s*/g, '')
+                            .replace(/\s*원문\s*/g, '')
+                            .trim()
+                    };
+                }
+            }
+
+            return { content: '' };
+        }
+
+        // 해당 h2 다음의 모든 형제 노드들을 순회하며 본문 수집
+        let content = '';
+        let currentNode = targetH2.nextElementSibling;
+
+        while (currentNode) {
+            // 다음 h2를 만나면 중단
+            if (currentNode.tagName === 'H2') {
+                break;
+            }
+
+            // 📝 더 많은 태그 유형에서 텍스트 수집
+            if (['P', 'UL', 'OL', 'DIV', 'BLOCKQUOTE', 'LI'].includes(currentNode.tagName)) {
+                let text = currentNode.textContent?.trim() || '';
+
+                // 🔥 "(원문)" 텍스트 필터링
+                text = text
+                    .replace(/\s*\(원문\)\s*/g, '')
+                    .replace(/\s*원문\s*/g, '')
+                    .trim();
+
+                if (text && text.length > 5) {
+                    // 중복 방지: 이미 추가된 내용과 겹치지 않는지 확인
+                    if (!content.includes(text.substring(0, 20))) {
+                        content += text + '\n\n';
+                    }
+                }
+            }
+
+            currentNode = currentNode.nextElementSibling;
+        }
+
+        // 📝 추가 내용 수집: 본문이 부족한 경우에만 (키워드 필터링 없이)
+        if (content.length < 200) {
+            console.log(`[Extract Specific] 본문이 부족함 (${content.length} chars), 추가 수집 시도...`);
+
+            // 해당 h2 주변의 모든 형제 노드에서 추가 내용 수집
+            let siblingNode = targetH2.parentElement?.firstElementChild;
+            let foundTargetH2 = false;
+            let nextH2Found = false;
+
+            while (siblingNode && !nextH2Found) {
+                if (siblingNode === targetH2) {
+                    foundTargetH2 = true;
+                    siblingNode = siblingNode.nextElementSibling;
+                    continue;
+                }
+
+                if (foundTargetH2) {
+                    if (siblingNode.tagName === 'H2') {
+                        nextH2Found = true;
+                        break;
+                    }
+
+                    if (['P', 'UL', 'OL', 'DIV', 'BLOCKQUOTE', 'LI', 'SECTION', 'ARTICLE'].includes(siblingNode.tagName)) {
+                        let text = siblingNode.textContent?.trim() || '';
+
+                        // 🔥 "(원문)" 텍스트 필터링
+                        text = text
+                            .replace(/\s*\(원문\)\s*/g, '')
+                            .replace(/\s*원문\s*/g, '')
+                            .trim();
+
+                        if (text && text.length > 10 && !content.includes(text.substring(0, 20))) {
+                            content += text + '\n\n';
+                            console.log(`[Extract Specific] 추가 본문: ${text.substring(0, 50)}...`);
+
+                            if (content.length > 1000) break; // 적당한 길이에서 중단
+                        }
+                    }
+                }
+
+                siblingNode = siblingNode.nextElementSibling;
+            }
+        }
+
+
+
+        // 내용 정리 및 최종 필터링
+        content = content
+            .replace(/\s*\(원문\)\s*/g, '') // 🔥 최종 "(원문)" 제거
+            .replace(/\s*원문\s*/g, '')
+            .replace(/\n{3,}/g, '\n\n') // 과도한 줄바꿈 정리
+            .trim();
+
+        if (content.length > 50) {
+            console.log(`[Extract Specific] ✅ 세부 내용 추출 완료: ${content.length} chars`);
+            return { content };
+        } else {
+            console.log(`[Extract Specific] ❌ 충분한 내용을 찾지 못함`);
+            return { content: '' };
+        }
+
+    } catch (error) {
+        console.error(`[Extract Specific] 오류 발생:`, error);
+        return { content: '' };
+    }
+}
+
 // 🤖 스마트 폴백 요약 생성 함수 (절대 실패하지 않음)
 function generateSmartFallbackSummary(article: NewsArticle, language: string): string {
     try {
-    const isKorean = language === 'kr';
-        
+        const isKorean = language === 'kr';
+
         // 안전한 데이터 추출
         const safeTitle = (article.title || '').toLowerCase();
         const safeSource = article.source || (isKorean ? '뉴스' : 'News Source');
         const safeSummary = article.summary || '';
         const safeContent = article.content || '';
-        
+
         // 내용의 충실도 확인
         const hasSubstantialContent = safeSummary.length > 50 || safeContent.length > 100;
-        
+
         // 주요 키워드 분석 (안전하게)
         const stockKeywords = ['tesla', '테슬라', 'apple', '애플', 'samsung', '삼성', 'google', '구글', 'microsoft', '마이크로소프트', 'nvidia', '엔비디아'];
         const marketKeywords = ['market', '시장', 'stock', '주식', 'index', '지수', 'economy', '경제', 'trading', '거래'];
         const financialKeywords = ['earnings', '실적', 'revenue', '매출', 'profit', '이익', 'loss', '손실', 'financial', '재무'];
         const techKeywords = ['ai', 'artificial intelligence', '인공지능', 'electric vehicle', '전기차', 'semiconductor', '반도체', 'technology', '기술'];
         const cryptoKeywords = ['bitcoin', '비트코인', 'crypto', '암호화폐', 'blockchain', '블록체인'];
-        
+
         // 키워드 매칭 (안전하게)
         const fullText = `${safeTitle} ${safeSummary.toLowerCase()} ${safeContent.toLowerCase()}`;
         const hasStock = stockKeywords.some(keyword => fullText.includes(keyword));
@@ -2486,16 +2722,16 @@ function generateSmartFallbackSummary(article: NewsArticle, language: string): s
         const hasFinancial = financialKeywords.some(keyword => fullText.includes(keyword));
         const hasTech = techKeywords.some(keyword => fullText.includes(keyword));
         const hasCrypto = cryptoKeywords.some(keyword => fullText.includes(keyword));
-    
-    let summary = '';
-    
-    if (isKorean) {
+
+        let summary = '';
+
+        if (isKorean) {
             // 🇰🇷 한국어 스마트 요약
             if (!hasSubstantialContent) {
                 // 제목만 있는 경우: 제목 기반 기본 설명
                 const originalTitle = article.title || '제목 없음';
                 summary = `"${originalTitle}" - ${safeSource}에서 보도한 뉴스입니다. `;
-                
+
                 if (hasStock) {
                     summary += `주요 기업의 동향이나 주가 관련 소식으로 보이며, `;
                 } else if (hasFinancial) {
@@ -2507,9 +2743,9 @@ function generateSmartFallbackSummary(article: NewsArticle, language: string): s
                 } else {
                     summary += `경제/금융 관련 소식으로 보이며, `;
                 }
-                
+
                 summary += `자세한 내용은 원문을 확인해주세요.`;
-                
+
             } else {
                 // 충분한 내용이 있는 경우: 일반 요약
                 if (hasStock) {
@@ -2519,28 +2755,28 @@ function generateSmartFallbackSummary(article: NewsArticle, language: string): s
                 } else if (hasMarket) {
                     summary = `시장 전문가들의 분석에 따르면, 이 뉴스는 현재 금융 시장의 주요 동향을 다룹니다. `;
                 } else if (hasFinancial) {
-            summary = `이 기사는 기업의 재무 실적 및 수익성과 관련된 중요한 정보를 제공합니다. `;
+                    summary = `이 기사는 기업의 재무 실적 및 수익성과 관련된 중요한 정보를 제공합니다. `;
                 } else if (hasTech) {
-            summary = `기술 혁신과 관련된 이 뉴스는 업계의 최신 발전 동향을 보여줍니다. `;
-        } else {
+                    summary = `기술 혁신과 관련된 이 뉴스는 업계의 최신 발전 동향을 보여줍니다. `;
+                } else {
                     summary = `${safeSource}의 보도에 따르면, 이 기사는 현재 주목받고 있는 이슈를 다룹니다. `;
                 }
-                
+
                 // 기사 제목이 있으면 포함
                 if (article.title && article.title.length > 10) {
                     summary += `"${article.title.substring(0, 80)}${article.title.length > 80 ? '...' : ''}"와 관련된 내용으로, `;
                 }
-                
+
                 summary += `투자자들과 업계 관계자들이 관심있게 지켜볼 만한 내용입니다.`;
             }
-        
-    } else {
+
+        } else {
             // 🇺🇸 영어 스마트 요약  
             if (!hasSubstantialContent) {
                 // 제목만 있는 경우: 제목 기반 기본 설명
                 const originalTitle = article.title || 'No Title';
                 summary = `"${originalTitle}" - News reported by ${safeSource}. `;
-                
+
                 if (hasStock) {
                     summary += `This appears to be about major company developments or stock movements. `;
                 } else if (hasFinancial) {
@@ -2552,9 +2788,9 @@ function generateSmartFallbackSummary(article: NewsArticle, language: string): s
                 } else {
                     summary += `This appears to be about economic/financial news. `;
                 }
-                
+
                 summary += `Please check the original article for details.`;
-                
+
             } else {
                 // 충분한 내용이 있는 경우: 일반 요약
                 if (hasStock) {
@@ -2564,33 +2800,33 @@ function generateSmartFallbackSummary(article: NewsArticle, language: string): s
                 } else if (hasMarket) {
                     summary = `Market analysts report that this news discusses key trends in the current financial markets. `;
                 } else if (hasFinancial) {
-            summary = `This article provides important information related to corporate financial performance and profitability. `;
+                    summary = `This article provides important information related to corporate financial performance and profitability. `;
                 } else if (hasTech) {
-            summary = `This technology-related news shows the latest industry developments and innovations. `;
-        } else {
+                    summary = `This technology-related news shows the latest industry developments and innovations. `;
+                } else {
                     summary = `According to ${safeSource}, this article covers a currently noteworthy issue. `;
                 }
-                
+
                 // 기사 제목이 있으면 포함
                 if (article.title && article.title.length > 10) {
                     summary += `The article titled "${article.title.substring(0, 80)}${article.title.length > 80 ? '...' : ''}" provides `;
                 }
-                
+
                 summary += `content that should be of interest to investors and industry stakeholders.`;
             }
-    }
-    
-    return summary;
-        
+        }
+
+        return summary;
+
     } catch (error) {
         console.warn(`[Smart Fallback] Error in smart summary generation:`, error);
-        
+
         // 🆘 최후의 최후 폴백 (절대 실패하지 않음)
         const isKorean = language === 'kr';
         const title = article?.title || (isKorean ? '제목 없음' : 'No Title');
         const source = article?.source || (isKorean ? '뉴스' : 'News');
-        
-        return isKorean 
+
+        return isKorean
             ? `${source}에서 "${title.substring(0, 50)}${title.length > 50 ? '...' : ''}" 관련 뉴스를 보도했습니다. 자세한 내용은 원문을 확인해주세요.`
             : `${source} reported news about "${title.substring(0, 50)}${title.length > 50 ? '...' : ''}". Please check the original article for details.`;
     }
@@ -2599,18 +2835,18 @@ function generateSmartFallbackSummary(article: NewsArticle, language: string): s
 // 🔥 시장뉴스 전용 함수 - GitBook 뉴스만 반환
 export async function getMarketNews(language: string): Promise<NewsArticle[]> {
     console.log(`[MARKET NEWS] Getting GitBook market news in ${language}`);
-    
+
     try {
         // GitBook 뉴스만 가져오기 (시장뉴스 전용)
-        const gitBookNews = await getGitBookLatestNews(language);
-        
-        if (gitBookNews && gitBookNews.length > 0) {
-            console.log(`[MARKET NEWS] ✅ Got ${gitBookNews.length} GitBook market news articles`);
-            
+        const { marketNews, wallStreetComments, schedule, scheduleTitle } = await getGitBookLatestNews(language);
+
+        if (marketNews && marketNews.length > 0) {
+            console.log(`[MARKET NEWS] ✅ Got ${marketNews.length} GitBook market news articles`);
+
             // 뉴스 기사들을 Supabase에 저장 (안전 모드)
             try {
                 const saveResults = await Promise.allSettled(
-                    gitBookNews.map(article => 
+                    marketNews.map(article =>
                         saveNewsArticle({
                             title: article.title,
                             content: article.content,
@@ -2622,13 +2858,13 @@ export async function getMarketNews(language: string): Promise<NewsArticle[]> {
                         })
                     )
                 );
-                
-                const successCount = saveResults.filter(result => 
+
+                const successCount = saveResults.filter(result =>
                     result.status === 'fulfilled' && result.value !== null
                 ).length;
-                
+
                 if (successCount > 0) {
-                    console.log(`[MARKET NEWS] ✅ Saved ${successCount}/${gitBookNews.length} articles to Supabase`);
+                    console.log(`[MARKET NEWS] ✅ Saved ${successCount}/${marketNews.length} articles to Supabase`);
                 } else {
                     console.log(`[MARKET NEWS] ⚠️ No articles saved to Supabase (table may not exist)`);
                 }
@@ -2636,15 +2872,15 @@ export async function getMarketNews(language: string): Promise<NewsArticle[]> {
                 console.warn(`[MARKET NEWS] DB save failed:`, dbError);
             }
 
-            return gitBookNews;
+            return marketNews;
         }
-        
+
         console.warn(`[MARKET NEWS] No GitBook news available, using fallback`);
         return getFallbackMarketNews(language);
-        
+
     } catch (error) {
         console.warn(`[MARKET NEWS] Error getting GitBook news:`, error);
-        
+
         // 폴백: 기본 시장뉴스 반환
         return getFallbackMarketNews(language);
     }
@@ -2653,46 +2889,46 @@ export async function getMarketNews(language: string): Promise<NewsArticle[]> {
 // 🎯 종목뉴스 전용 함수 - 특정 종목 관련 뉴스만 반환
 export async function getStockSpecificNews(ticker: string, language: string): Promise<NewsArticle[]> {
     console.log(`[STOCK NEWS] Getting news specifically for ticker "${ticker}" in ${language}`);
-    
+
     try {
         // 🎯 스마트 검색어 변환 (한국 주식 코드 → 회사명)
         const smartQuery = convertToNewsQuery(ticker, language);
         console.log(`[STOCK NEWS] Converted search query: "${ticker}" → "${smartQuery}"`);
-        
-        const isInternationalQuery = !language.includes('kr') || 
+
+        const isInternationalQuery = !language.includes('kr') ||
             ['TSLA', 'AAPL', 'GOOGL', 'MSFT', 'AMZN', 'NVDA', 'META'].includes(ticker.toUpperCase());
-        
+
         // 🔥 강화된 제미나이 실시간 뉴스 최우선 수집 (실제 링크 + AI 생성)
         console.log(`[STOCK NEWS] 🚀 Enhanced Gemini 강화 검색 최우선 실행 for "${ticker}"`);
         let geminiNews: NewsArticle[] = [];
         try {
-            // 🔗 실제 뉴스 링크와 AI 생성 뉴스 병렬 수집
+            // 🔗 실제 뉴스 링크와 AI 생성 병렬 수집
             const [realNews, aiNews] = await Promise.allSettled([
                 Promise.race([
                     getGeminiRealNewsLinks(ticker, language),
-                    new Promise<NewsArticle[]>((_, reject) => 
+                    new Promise<NewsArticle[]>((_, reject) =>
                         setTimeout(() => reject(new Error('Gemini Real News timeout')), 10000)
                     )
                 ]),
                 Promise.race([
                     getGeminiStockNews(ticker, language),
-                    new Promise<NewsArticle[]>((_, reject) => 
+                    new Promise<NewsArticle[]>((_, reject) =>
                         setTimeout(() => reject(new Error('Gemini AI News timeout')), 8000)
                     )
                 ])
             ]);
-            
+
             // 실제 뉴스를 우선으로, AI 뉴스를 보완으로 결합
             const realNewsArticles = realNews.status === 'fulfilled' ? realNews.value : [];
             const aiNewsArticles = aiNews.status === 'fulfilled' ? aiNews.value : [];
-            
+
             geminiNews = [...realNewsArticles, ...aiNewsArticles];
-            
+
             console.log(`[STOCK NEWS] 🔗 Real News: ${realNewsArticles.length}개, 🤖 AI News: ${aiNewsArticles.length}개`);
-            
+
             if (geminiNews.length > 0) {
                 console.log(`[STOCK NEWS] 🔥 Enhanced Gemini SUCCESS: ${geminiNews.length}개 고품질 뉴스 확보!`);
-                
+
                 // 🎯 제미나이 뉴스가 충분하면 다른 소스 의존도 줄이기
                 if (geminiNews.length >= 6) {
                     console.log(`[STOCK NEWS] 🔥 충분한 Gemini 뉴스! 다른 소스는 보조용으로만 활용`);
@@ -2704,20 +2940,21 @@ export async function getStockSpecificNews(ticker: string, language: string): Pr
             console.warn(`[STOCK NEWS] ❌ Enhanced Gemini failed:`, error);
             geminiNews = [];
         }
-        
+
         // 📰 오선 GitBook 최신 뉴스 추가 (종목 뉴스에도 포함)
         console.log(`[STOCK NEWS] 📰 Fetching GitBook latest news for context`);
         let gitBookNews: NewsArticle[] = [];
         try {
-            gitBookNews = await getGitBookLatestNews(language);
+            const { marketNews, wallStreetComments, schedule, scheduleTitle } = await getGitBookLatestNews(language);
+            gitBookNews = marketNews;
             console.log(`[STOCK NEWS] 📰 GitBook returned ${gitBookNews.length} market context articles`);
         } catch (error) {
             console.warn(`[STOCK NEWS] 📰 GitBook failed:`, error);
         }
-        
+
         // 🔥 다중 뉴스 소스에서 데이터 수집 및 중복 제거
         const allNewsResults: NewsArticle[] = [...geminiNews, ...gitBookNews]; // 제미나이와 GitBook 뉴스를 맨 앞에
-        
+
         // 🔥 NewsAPI 제거하고 안정적인 무료 소스들만 사용 (Gemini 우선순위 최대화)
         const stockNewsSources = isInternationalQuery ? [
             { name: 'Yahoo Finance', fn: () => getYahooFinanceNews(ticker, language), timeout: 4000, priority: 1 },
@@ -2730,7 +2967,7 @@ export async function getStockSpecificNews(ticker: string, language: string): Pr
             { name: 'Alpha Vantage', fn: () => getAlphaVantageNews(ticker, language), timeout: 3000, priority: 3 },
             { name: 'BBC RSS News', fn: () => getSimpleRSSNews(smartQuery, language), timeout: 2500, priority: 4 },
         ];
-        
+
         // 🎯 제미나이 뉴스가 충분하면 외부 소스 호출 최소화
         const shouldMinimizeExternalSources = geminiNews.length >= 4;
         if (shouldMinimizeExternalSources) {
@@ -2743,20 +2980,20 @@ export async function getStockSpecificNews(ticker: string, language: string): Pr
         const newsPromises = stockNewsSources.map(async (source) => {
             try {
                 console.log(`[STOCK NEWS] Fetching from ${source.name} for "${ticker}"`);
-                
+
                 const headlines = await Promise.race([
                     source.fn(),
-                    new Promise<never>((_, reject) => 
+                    new Promise<never>((_, reject) =>
                         setTimeout(() => reject(new Error(`${source.name} timeout`)), source.timeout)
                     )
                 ]);
-                
+
                 if (headlines && headlines.length > 0) {
                     console.log(`[STOCK NEWS] ✅ Got ${headlines.length} articles from ${source.name}`);
                     return { source: source.name, priority: source.priority, articles: headlines };
                 }
                 return { source: source.name, priority: source.priority, articles: [] };
-                
+
             } catch (error) {
                 const errorMsg = error instanceof Error ? error.message : 'Unknown error';
                 console.warn(`[STOCK NEWS] ❌ ${source.name} failed for "${ticker}": ${errorMsg}`);
@@ -2766,7 +3003,7 @@ export async function getStockSpecificNews(ticker: string, language: string): Pr
 
         // 모든 뉴스 소스 결과 수집
         const newsResults = await Promise.all(newsPromises);
-        
+
         // 우선순위별로 정렬하고 기사 수집
         newsResults
             .sort((a, b) => a.priority - b.priority)
@@ -2781,13 +3018,13 @@ export async function getStockSpecificNews(ticker: string, language: string): Pr
         if (allNewsResults.length > 0) {
             const uniqueNews = removeDuplicateNews(allNewsResults);
             const diverseNews = ensureNewsDiversity(uniqueNews, ticker, language);
-            
+
             console.log(`[STOCK NEWS] ✅ Returning ${diverseNews.length} diverse articles for "${ticker}" (from ${allNewsResults.length} total, ${uniqueNews.length} unique)`);
-            
+
             // 뉴스 기사들을 Supabase에 저장 (안전 모드)
             try {
                 const saveResults = await Promise.allSettled(
-                    diverseNews.map(article => 
+                    diverseNews.map(article =>
                         saveNewsArticle({
                             title: article.title,
                             content: article.content,
@@ -2799,11 +3036,11 @@ export async function getStockSpecificNews(ticker: string, language: string): Pr
                         })
                     )
                 );
-                
-                const successCount = saveResults.filter(result => 
+
+                const successCount = saveResults.filter(result =>
                     result.status === 'fulfilled' && result.value !== null
                 ).length;
-                
+
                 if (successCount > 0) {
                     console.log(`[STOCK NEWS] ✅ Saved ${successCount}/${diverseNews.length} articles to Supabase`);
                 } else {
@@ -2815,13 +3052,13 @@ export async function getStockSpecificNews(ticker: string, language: string): Pr
 
             return diverseNews;
         }
-        
+
         console.warn(`[STOCK NEWS] All stock news sources failed for "${ticker}", using fallback`);
         return getFallbackStockNews(ticker, language);
-        
+
     } catch (error) {
         console.warn(`[STOCK NEWS] Error getting news for "${ticker}":`, error);
-        
+
         // 폴백: 해당 종목 관련 기본 뉴스 반환
         return getFallbackStockNews(ticker, language);
     }
@@ -2831,7 +3068,7 @@ export async function getStockSpecificNews(ticker: string, language: string): Pr
 function removeDuplicateNews(articles: NewsArticle[]): NewsArticle[] {
     const seen = new Set<string>();
     const unique: NewsArticle[] = [];
-    
+
     for (const article of articles) {
         // 제목 정규화 (공백, 특수문자 제거하여 비교)
         const normalizedTitle = article.title
@@ -2839,10 +3076,10 @@ function removeDuplicateNews(articles: NewsArticle[]): NewsArticle[] {
             .replace(/[^\w\s가-힣]/g, '')
             .replace(/\s+/g, ' ')
             .trim();
-        
+
         const titleKey = normalizedTitle.substring(0, 50); // 처음 50자로 중복 검사
         const urlKey = article.url;
-        
+
         // 제목이나 URL이 중복되지 않은 경우만 추가
         if (!seen.has(titleKey) && !seen.has(urlKey)) {
             seen.add(titleKey);
@@ -2850,7 +3087,7 @@ function removeDuplicateNews(articles: NewsArticle[]): NewsArticle[] {
             unique.push(article);
         }
     }
-    
+
     console.log(`[NEWS DEDUP] Removed ${articles.length - unique.length} duplicate articles`);
     return unique;
 }
@@ -2859,7 +3096,7 @@ function removeDuplicateNews(articles: NewsArticle[]): NewsArticle[] {
 function ensureNewsDiversity(articles: NewsArticle[], ticker: string, language: string): NewsArticle[] {
     // 소스별 분산, 시간별 분산, 품질 기준 적용
     const sourceGroups = new Map<string, NewsArticle[]>();
-    
+
     // 소스별로 그룹화
     articles.forEach(article => {
         const source = article.source;
@@ -2868,26 +3105,26 @@ function ensureNewsDiversity(articles: NewsArticle[], ticker: string, language: 
         }
         sourceGroups.get(source)!.push(article);
     });
-    
+
     // 각 소스에서 최대 3개씩만 선택 (다양성 확보)
     const diverseArticles: NewsArticle[] = [];
-    
+
     for (const [source, sourceArticles] of sourceGroups) {
         // 최신순으로 정렬
-        const sortedArticles = sourceArticles.sort((a, b) => 
+        const sortedArticles = sourceArticles.sort((a, b) =>
             new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime()
         );
-        
+
         // 각 소스에서 최대 3개까지만 선택
         const selectedArticles = sortedArticles.slice(0, 3);
         diverseArticles.push(...selectedArticles);
     }
-    
+
     // 최종적으로 최신순으로 정렬하고 최대 15개로 제한
     const finalArticles = diverseArticles
         .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
         .slice(0, 15);
-    
+
     console.log(`[NEWS DIVERSITY] Selected ${finalArticles.length} diverse articles from ${sourceGroups.size} sources`);
     return finalArticles;
 }
@@ -2895,13 +3132,13 @@ function ensureNewsDiversity(articles: NewsArticle[], ticker: string, language: 
 // 🔄 기존 getHeadlines 함수 - 이제 라우터 역할만 함
 export async function getHeadlines(query: string, language: string): Promise<NewsArticle[]> {
     console.log(`[NEWS ROUTER] Routing news request for "${query}" in ${language}`);
-    
+
     // 🎯 종목별 vs 시장뉴스 구분
     const isStockSpecific = query.match(/^[A-Z0-9]{1,10}(\.[A-Z]{1,3})?$/); // 종목 코드 패턴
-    const isMarketNews = query.toLowerCase().includes('market') || 
-                        query.toLowerCase().includes('시장') || 
-                        query.toLowerCase().includes('경제');
-    
+    const isMarketNews = query.toLowerCase().includes('market') ||
+        query.toLowerCase().includes('시장') ||
+        query.toLowerCase().includes('경제');
+
     if (isMarketNews || (!isStockSpecific && query.length > 10)) {
         // 시장뉴스 요청
         console.log(`[NEWS ROUTER] → Routing to MARKET NEWS`);
@@ -2920,39 +3157,39 @@ export async function getHeadlines(query: string, language: string): Promise<New
 // 🆘 시장뉴스 폴백
 function getFallbackMarketNews(language: string): NewsArticle[] {
     const isKorean = language === 'kr';
-    
+
     if (isKorean) {
         return [
-        {
-            title: "국내 증시, 글로벌 경제 불확실성 속에서도 상승세 유지",
-            url: "https://finance.naver.com",
-            publishedAt: new Date().toISOString(),
-            source: "연합뉴스",
-            summary: "코스피가 외국인 매수세에 힘입어 상승 마감했습니다."
-        },
-        {
-            title: "미 연준 금리 정책 발표 앞두고 투자자들 관망세",
-            url: "https://finance.naver.com",
-            publishedAt: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
-            source: "머니투데이",
-            summary: "FOMC 회의 결과에 따른 시장 변동성이 예상됩니다."
+            {
+                title: "국내 증시, 글로벌 경제 불확실성 속에서도 상승세 유지",
+                url: "https://finance.naver.com",
+                publishedAt: new Date().toISOString(),
+                source: "연합뉴스",
+                summary: "코스피가 외국인 매수세에 힘입어 상승 마감했습니다."
+            },
+            {
+                title: "미 연준 금리 정책 발표 앞두고 투자자들 관망세",
+                url: "https://finance.naver.com",
+                publishedAt: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
+                source: "머니투데이",
+                summary: "FOMC 회의 결과에 따른 시장 변동성이 예상됩니다."
             }
         ];
     } else {
         return [
-        {
-            title: "Stock Market Rallies on Strong Economic Data",
-            url: "https://finance.yahoo.com",
-            publishedAt: new Date().toISOString(),
-            source: "Reuters",
-            summary: "Major indices posted gains following positive economic indicators."
-        },
-        {
-            title: "Federal Reserve Policy Decision Awaited by Investors",
-            url: "https://finance.yahoo.com",
-            publishedAt: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
-            source: "Bloomberg",
-            summary: "Markets anticipate key interest rate decisions from the Fed."
+            {
+                title: "Stock Market Rallies on Strong Economic Data",
+                url: "https://finance.yahoo.com",
+                publishedAt: new Date().toISOString(),
+                source: "Reuters",
+                summary: "Major indices posted gains following positive economic indicators."
+            },
+            {
+                title: "Federal Reserve Policy Decision Awaited by Investors",
+                url: "https://finance.yahoo.com",
+                publishedAt: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
+                source: "Bloomberg",
+                summary: "Markets anticipate key interest rate decisions from the Fed."
             }
         ];
     }
@@ -2962,12 +3199,12 @@ function getFallbackMarketNews(language: string): NewsArticle[] {
 function getFallbackStockNews(ticker: string, language: string): NewsArticle[] {
     const isKorean = language === 'kr';
     const company = getCompanyName(ticker, isKorean);
-    
+
     const today = new Date();
     const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
     const twoDaysAgo = new Date(today.getTime() - 2 * 24 * 60 * 60 * 1000);
     const threeDaysAgo = new Date(today.getTime() - 3 * 24 * 60 * 60 * 1000);
-        
+
     if (isKorean) {
         return [
             {
@@ -3094,12 +3331,12 @@ function getCompanyName(ticker: string, isKorean: boolean): string {
         'NVDA': { kr: '엔비디아', en: 'NVIDIA Corporation' },
         'META': { kr: '메타', en: 'Meta Platforms Inc.' }
     };
-    
+
     const company = companies[ticker.toUpperCase()];
     if (company) {
         return isKorean ? company.kr : company.en;
     }
-    
+
     return ticker; // 매핑되지 않은 경우 티커 그대로 반환
 }
 
@@ -3110,37 +3347,37 @@ export async function getMarketIndicators(): Promise<MarketIndicator[] | null> {
 
 export async function getGlobalIndices() {
     console.log("[Action] 🌍 Getting global indices data with fallback system.");
-    
+
     // 🛡️ 다중 폴백 시스템으로 401 에러 방지 (안정적인 순서로 재배열)
     const dataSources = [
-        { 
-            name: 'Simulation (Stable)', 
+        {
+            name: 'Simulation (Stable)',
             fn: () => getGlobalIndicesSimulation(),
-            timeout: 2000 
+            timeout: 2000
         },
-        { 
-            name: 'Yahoo Finance', 
+        {
+            name: 'Yahoo Finance',
             fn: () => getYahooGlobalIndices(),
-            timeout: 6000 
+            timeout: 6000
         },
-        { 
-            name: 'FMP Public (Backup)', 
+        {
+            name: 'FMP Public (Backup)',
             fn: () => getGlobalIndicesPublic(),
-            timeout: 5000 
+            timeout: 5000
         }
     ];
 
     for (const source of dataSources) {
         try {
             console.log(`[Global Indices] ⚡ Trying ${source.name} (timeout: ${source.timeout}ms)`);
-            
+
             const result = await Promise.race([
                 source.fn(),
-                new Promise<never>((_, reject) => 
+                new Promise<never>((_, reject) =>
                     setTimeout(() => reject(new Error(`${source.name} timeout`)), source.timeout)
                 )
             ]);
-            
+
             if (result && result.length > 0) {
                 console.log(`[Global Indices] ✅ Success with ${source.name}`);
                 return result;
@@ -3151,7 +3388,7 @@ export async function getGlobalIndices() {
             continue;
         }
     }
-    
+
     // 🆘 최후 폴백: 실시간 시뮬레이션 데이터
     console.log("[Global Indices] 🔄 Using final fallback - realistic simulation");
     return getFinalFallbackIndices();
@@ -3162,7 +3399,7 @@ function getFinalFallbackIndices() {
     const now = Date.now();
     const dailyVariation = Math.sin(now / 86400000) * 0.02; // 일일 변동
     const randomVariation = (Math.random() - 0.5) * 0.01; // 랜덤 변동
-    
+
     return [
         {
             symbol: "^KS11",
@@ -3194,11 +3431,11 @@ function getFinalFallbackIndices() {
 // 🔧 Yahoo Finance 백업 (401 에러 방지)
 async function getYahooGlobalIndices() {
     console.log("[Yahoo Backup] Getting indices data");
-    
+
     try {
         const tickers = ["^KS11", "^IXIC", "^GSPC", "USDKRW=X"];
         const tickersString = tickers.join(",");
-        
+
         const response = await fetch(
             `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${tickersString}`,
             {
@@ -3211,24 +3448,24 @@ async function getYahooGlobalIndices() {
                 }
             }
         );
-        
+
         if (!response.ok) {
             throw new Error(`Yahoo Finance HTTP ${response.status}: ${response.statusText}`);
         }
-        
+
         const data = await response.json();
         const results = data.quoteResponse?.result || [];
-        
+
         if (results.length === 0) {
             throw new Error('No data from Yahoo Finance');
         }
-        
+
         // Create a map for quick lookup
         const resultsMap = new Map(results.map((result: any) => [result.symbol, result]));
-        
+
         // Define order of indices
         const orderedTickers = ["^KS11", "^IXIC", "^GSPC", "USDKRW=X"];
-        
+
         const indicesData = orderedTickers.map(ticker => {
             const result = resultsMap.get(ticker) as any;
             return {
@@ -3238,7 +3475,7 @@ async function getYahooGlobalIndices() {
                 changePercent: result?.regularMarketChangePercent || 0,
             };
         });
-        
+
         return indicesData;
     } catch (error) {
         console.error("[Yahoo Backup] Error:", error);
@@ -3249,10 +3486,10 @@ async function getYahooGlobalIndices() {
 // Alpha Vantage API를 사용한 실시간 데이터 (무료 API 키 필요)
 export async function getGlobalIndicesAlphaVantage() {
     console.log("[Action] Getting REAL-TIME global indices data from Alpha Vantage.");
-    
+
     // 환경 변수에서 API 키 가져오기 (또는 demo 키 사용)
     const API_KEY = process.env.NEXT_PUBLIC_ALPHA_VANTAGE_API_KEY || 'demo';
-    
+
     try {
         const indices = [
             { symbol: "^KS11", query: "KOSPI200" }, // 코스피200으로 변경
@@ -3266,21 +3503,21 @@ export async function getGlobalIndicesAlphaVantage() {
                 const response = await fetch(
                     `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${index.query}&apikey=${API_KEY}`
                 );
-                
+
                 if (!response.ok) {
                     throw new Error(`Failed to fetch ${index.symbol}`);
                 }
-                
+
                 const data = await response.json();
                 console.log(`Alpha Vantage response for ${index.symbol}:`, data);
-                
+
                 const quote = data["Global Quote"];
-                
+
                 if (!quote || Object.keys(quote).length === 0) {
                     console.warn(`No data from Alpha Vantage for ${index.symbol}`);
                     throw new Error(`No data for ${index.symbol}`);
                 }
-                
+
                 return {
                     symbol: index.symbol,
                     price: parseFloat(quote["05. price"]) || 0,
@@ -3300,16 +3537,16 @@ export async function getGlobalIndicesAlphaVantage() {
         });
 
         const results = await Promise.all(promises);
-        
+
         // 데이터가 없으면 Yahoo Finance로 폴백
         const hasValidData = results.some(r => r.price > 0);
         if (!hasValidData) {
             console.log("Alpha Vantage failed, falling back to Yahoo Finance");
             return getGlobalIndices();
         }
-        
+
         return results;
-        
+
     } catch (error) {
         console.error("Error with Alpha Vantage API:", error);
         // Alpha Vantage 실패시 Yahoo Finance로 폴백
@@ -3320,10 +3557,10 @@ export async function getGlobalIndicesAlphaVantage() {
 // Finnhub API를 사용한 실시간 데이터 (무료 API 키 필요)
 export async function getGlobalIndicesFinnhub() {
     console.log("[Action] Getting REAL-TIME global indices data from Finnhub.");
-    
+
     // 환경 변수에서 API 키 가져오기
     const API_KEY = process.env.NEXT_PUBLIC_FINNHUB_API_KEY || 'demo';
-    
+
     try {
         const indices = [
             { symbol: "^KS11", finnhubSymbol: "^KS11" },
@@ -3337,13 +3574,13 @@ export async function getGlobalIndicesFinnhub() {
                 const response = await fetch(
                     `https://finnhub.io/api/v1/quote?symbol=${index.finnhubSymbol}&token=${API_KEY}`
                 );
-                
+
                 if (!response.ok) {
                     throw new Error(`Failed to fetch ${index.symbol}`);
                 }
-                
+
                 const data = await response.json();
-                
+
                 return {
                     symbol: index.symbol,
                     price: data.c || 0, // current price
@@ -3362,16 +3599,16 @@ export async function getGlobalIndicesFinnhub() {
         });
 
         const results = await Promise.all(promises);
-        
+
         // 데이터 검증
         const hasValidData = results.some(r => r.price > 0);
         if (!hasValidData) {
             console.log("Finnhub failed, falling back to Yahoo Finance");
             return getGlobalIndices();
         }
-        
+
         return results;
-        
+
     } catch (error) {
         console.error("Error with Finnhub API:", error);
         return getGlobalIndices();
@@ -3381,9 +3618,9 @@ export async function getGlobalIndicesFinnhub() {
 // IEX Cloud API를 사용한 실시간 데이터 (무료 API 키 필요)
 export async function getGlobalIndicesIEX() {
     console.log("[Action] Getting REAL-TIME global indices data from IEX Cloud.");
-    
+
     const API_KEY = process.env.NEXT_PUBLIC_IEX_API_KEY || 'demo';
-    
+
     try {
         const indices = [
             { symbol: "^KS11", iexSymbol: "KOSPI" },
@@ -3397,13 +3634,13 @@ export async function getGlobalIndicesIEX() {
                 const response = await fetch(
                     `https://cloud.iexapis.com/stable/stock/${index.iexSymbol}/quote?token=${API_KEY}`
                 );
-                
+
                 if (!response.ok) {
                     throw new Error(`Failed to fetch ${index.symbol}`);
                 }
-                
+
                 const data = await response.json();
-                
+
                 return {
                     symbol: index.symbol,
                     price: data.latestPrice || 0,
@@ -3422,15 +3659,15 @@ export async function getGlobalIndicesIEX() {
         });
 
         const results = await Promise.all(promises);
-        
+
         const hasValidData = results.some(r => r.price > 0);
         if (!hasValidData) {
             console.log("IEX Cloud failed, falling back to Yahoo Finance");
             return getGlobalIndices();
         }
-        
+
         return results;
-        
+
     } catch (error) {
         console.error("Error with IEX Cloud API:", error);
         return getGlobalIndices();
@@ -3440,13 +3677,13 @@ export async function getGlobalIndicesIEX() {
 // 스마트 실시간 데이터 가져오기 (여러 API 시도)
 export async function getGlobalIndicesRealTime() {
     console.log("[Action] Getting REAL-TIME global indices data (Smart API selection).");
-    
+
     const preferredAPI = process.env.NEXT_PUBLIC_PREFERRED_API || 'yahoo-finance';
-    
+
     try {
         // 🚀 실제 데이터 API 우선순위 (더 안정적인 순서로 변경)
         console.log(`[REAL DATA] Attempting to use ${preferredAPI} API for real-time data`);
-        
+
         switch (preferredAPI) {
             case 'yahoo-finance':
                 console.log('[REAL DATA] Using Yahoo Finance API (가장 안정적)');
@@ -3473,7 +3710,7 @@ export async function getGlobalIndicesRealTime() {
 // 🚀 Yahoo Finance API (실시간 지수 데이터)
 async function getYahooFinanceIndices() {
     console.log("[Yahoo Finance] Getting REAL-TIME indices data");
-    
+
     try {
         // 각 지수별로 개별 호출 (더 정확한 데이터)
         const promises = [
@@ -3494,39 +3731,39 @@ async function getYahooFinanceIndices() {
                 headers: { 'User-Agent': 'Mozilla/5.0' }
             })
         ];
-        
+
         const responses = await Promise.all(promises);
         const results = [];
         const symbols = ['^KS11', '^IXIC', '^GSPC', 'USDKRW=X'];
-        
+
         for (let i = 0; i < responses.length; i++) {
             try {
                 if (responses[i].ok) {
                     const data = await responses[i].json();
                     const chart = data.chart?.result?.[0];
-                    
+
                     if (chart && chart.meta) {
                         const meta = chart.meta;
-                        
+
                         // 최신 실시간 데이터 추출
                         const currentPrice = meta.regularMarketPrice || meta.price || 0;
                         const previousClose = meta.previousClose || meta.chartPreviousClose || 0;
-                        
+
                         let change = 0;
                         let changePercent = 0;
-                        
+
                         if (previousClose > 0) {
                             change = currentPrice - previousClose;
                             changePercent = (change / previousClose) * 100;
                         }
-                        
+
                         console.log(`[Yahoo Finance] ${symbols[i]} 실시간:`, {
                             현재가: currentPrice,
                             전일종가: previousClose,
                             변동: change.toFixed(2),
                             변동률: changePercent.toFixed(2) + '%'
                         });
-                        
+
                         results.push({
                             symbol: symbols[i],
                             price: parseFloat(currentPrice.toFixed(2)),
@@ -3539,15 +3776,15 @@ async function getYahooFinanceIndices() {
                 console.warn(`[Yahoo Finance] Error parsing ${symbols[i]}:`, err);
             }
         }
-        
+
         console.log(`[Yahoo Finance] ✅ Successfully fetched ${results.length}/4 real-time indices`);
-        
+
         if (results.length >= 2) {
             return results;
         } else {
             throw new Error('실시간 데이터 부족');
         }
-        
+
     } catch (error) {
         console.error('[Yahoo Finance] Error:', error);
         // v7 API로 폴백
@@ -3558,7 +3795,7 @@ async function getYahooFinanceIndices() {
 // Yahoo Finance v7 API (폴백)
 async function getYahooFinanceV7Indices() {
     console.log("[Yahoo Finance v7] Using fallback API");
-    
+
     try {
         const symbols = '%5EKS11,%5EIXIC,%5EGSPC,KRW%3DX';
         const response = await fetch(
@@ -3569,20 +3806,20 @@ async function getYahooFinanceV7Indices() {
                 }
             }
         );
-        
+
         if (!response.ok) {
             throw new Error('Yahoo v7 API failed');
         }
-        
+
         const data = await response.json();
         const quotes = data.quoteResponse?.result || [];
-        
+
         return quotes.map((quote: any) => {
             let symbol = quote.symbol;
             if (symbol === 'KRW=X') {
                 symbol = 'USDKRW=X';
             }
-            
+
             return {
                 symbol: symbol,
                 price: quote.regularMarketPrice || 0,
@@ -3590,7 +3827,7 @@ async function getYahooFinanceV7Indices() {
                 changePercent: quote.regularMarketChangePercent || 0
             };
         });
-        
+
     } catch (error) {
         console.error('[Yahoo Finance v7] Error:', error);
         throw error;
@@ -3600,12 +3837,12 @@ async function getYahooFinanceV7Indices() {
 // 한국 투자자를 위한 국내 데이터 소스 (더 안정적인 API 사용)
 export async function getGlobalIndicesKorea() {
     console.log("[Action] Getting REAL-TIME market data using stable APIs.");
-    
+
     try {
         // FMP API를 사용 (무료 250회/일, API 키 불필요한 엔드포인트 사용)
         const [kospiData, nasdaqData, sp500Data, usdkrwData] = await Promise.all([
             fetchFromFMP('KOSPI'),
-            fetchFromFMP('^IXIC'),  
+            fetchFromFMP('^IXIC'),
             fetchFromFMP('^GSPC'),
             fetchUSDKRWFromDunamu() // 업비트는 잘 작동하므로 유지
         ]);
@@ -3613,29 +3850,29 @@ export async function getGlobalIndicesKorea() {
         console.log('Korea API Results:', { kospiData, nasdaqData, sp500Data, usdkrwData });
 
         return [
-            { 
-                symbol: "^KS11", 
-                price: kospiData.price, 
-                change: kospiData.change, 
-                changePercent: kospiData.changePercent 
+            {
+                symbol: "^KS11",
+                price: kospiData.price,
+                change: kospiData.change,
+                changePercent: kospiData.changePercent
             },
-            { 
-                symbol: "^IXIC", 
-                price: nasdaqData.price, 
-                change: nasdaqData.change, 
-                changePercent: nasdaqData.changePercent 
+            {
+                symbol: "^IXIC",
+                price: nasdaqData.price,
+                change: nasdaqData.change,
+                changePercent: nasdaqData.changePercent
             },
-            { 
-                symbol: "^GSPC", 
-                price: sp500Data.price, 
-                change: sp500Data.change, 
-                changePercent: sp500Data.changePercent 
+            {
+                symbol: "^GSPC",
+                price: sp500Data.price,
+                change: sp500Data.change,
+                changePercent: sp500Data.changePercent
             },
-            { 
-                symbol: "USDKRW=X", 
-                price: usdkrwData.price, 
-                change: usdkrwData.change, 
-                changePercent: usdkrwData.changePercent 
+            {
+                symbol: "USDKRW=X",
+                price: usdkrwData.price,
+                change: usdkrwData.change,
+                changePercent: usdkrwData.changePercent
             }
         ];
     } catch (error) {
@@ -3657,15 +3894,15 @@ async function fetchFromFMP(symbol: string) {
                 }
             }
         );
-        
+
         if (!response.ok) {
             console.warn(`FMP API failed for ${symbol}, trying alternative...`);
             return await fetchFromAlternativeAPI(symbol);
         }
-        
+
         const data = await response.json();
         console.log(`FMP response for ${symbol}:`, data);
-        
+
         if (data && data.length > 0) {
             const quote = data[0];
             return {
@@ -3674,7 +3911,7 @@ async function fetchFromFMP(symbol: string) {
                 changePercent: quote.changesPercentage || 0,
             };
         }
-        
+
         throw new Error(`No data from FMP for ${symbol}`);
     } catch (error) {
         console.error(`FMP fetch failed for ${symbol}:`, error);
@@ -3691,26 +3928,26 @@ async function fetchFromAlternativeAPI(symbol: string) {
             '^IXIC': 'QQQ',       // 나스닥 ETF
             '^GSPC': 'SPY'        // S&P500 ETF
         };
-        
+
         const mappedSymbol = symbolMap[symbol] || symbol;
-        
+
         // 간단한 Yahoo Finance 대체 API 시도
         const response = await fetch(
             `https://api.twelvedata.com/quote?symbol=${mappedSymbol}&apikey=demo`,
             {
-            headers: {
+                headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 }
             }
         );
-        
+
         if (!response.ok) {
             throw new Error(`Alternative API failed for ${symbol}`);
         }
-        
+
         const data = await response.json();
         console.log(`Alternative API response for ${symbol}:`, data);
-        
+
         if (data && !data.status) {
             return {
                 price: parseFloat(data.close) || 0,
@@ -3718,7 +3955,7 @@ async function fetchFromAlternativeAPI(symbol: string) {
                 changePercent: parseFloat(data.percent_change) || 0,
             };
         }
-        
+
         throw new Error(`No data from alternative API for ${symbol}`);
     } catch (error) {
         console.error(`Alternative API fetch failed for ${symbol}:`, error);
@@ -3730,17 +3967,17 @@ async function fetchFromAlternativeAPI(symbol: string) {
 // 임시 실시간 데이터 (API 실패시)
 function getTemporaryData(symbol: string) {
     console.log(`Using temporary data for ${symbol}`);
-    
+
     const baseData = {
         'KOSPI': { price: 2485.65, change: 5.23, changePercent: 0.21 },
         '^IXIC': { price: 16926.58, change: 145.37, changePercent: 0.87 },
         '^GSPC': { price: 5447.87, change: 23.14, changePercent: 0.43 }
     };
-    
+
     // 실시간처럼 보이게 하기 위해 약간의 랜덤 변화 추가
     const base = baseData[symbol as keyof typeof baseData] || { price: 0, change: 0, changePercent: 0 };
     const randomVariation = (Math.random() - 0.5) * 0.02; // ±1% 랜덤 변화
-    
+
     return {
         price: base.price * (1 + randomVariation),
         change: base.change * (1 + randomVariation),
@@ -3773,27 +4010,27 @@ async function fetchUSDKRWFromDunamu() {
         const response = await fetch(
             'https://quotation-api-cdn.dunamu.com/v1/forex/recent?codes=FRX.KRWUSD'
         );
-        
+
         if (!response.ok) {
             throw new Error('Dunamu API failed');
         }
-        
+
         const data = await response.json();
         const usdkrw = data?.[0];
-        
+
         if (usdkrw) {
             const currentPrice = usdkrw.basePrice;
             const previousPrice = usdkrw.openingPrice;
             const change = currentPrice - previousPrice;
             const changePercent = (change / previousPrice) * 100;
-            
+
             return {
                 price: currentPrice || 0,
                 change: change || 0,
                 changePercent: changePercent || 0,
             };
         }
-        
+
         throw new Error('No USD/KRW data');
     } catch (error) {
         console.error('Dunamu USD/KRW fetch failed:', error);
@@ -3830,7 +4067,7 @@ async function getKISAccessToken() {
 
         const data = await response.json();
         console.log('KIS Token issued successfully');
-        
+
         return {
             access_token: data.access_token,
             expires_in: data.expires_in
@@ -3924,7 +4161,7 @@ async function fetchKISOverseaPrice(token: string, symbol: string, exchange: str
 // 한국투자증권 API를 사용한 실시간 해외 지수 데이터
 export async function getGlobalIndicesKIS() {
     console.log("[Action] Getting REAL-TIME data from Korea Investment & Securities API.");
-    
+
     try {
         // 1. 토큰 발급
         const tokenData = await getKISAccessToken();
@@ -3941,29 +4178,29 @@ export async function getGlobalIndicesKIS() {
         console.log('KIS API Results:', { kospiData, nasdaqData, sp500Data, usdkrwData });
 
         return [
-            { 
-                symbol: "^KS11", 
-                price: kospiData.price, 
-                change: kospiData.change, 
-                changePercent: kospiData.changePercent 
+            {
+                symbol: "^KS11",
+                price: kospiData.price,
+                change: kospiData.change,
+                changePercent: kospiData.changePercent
             },
-            { 
-                symbol: "^IXIC", 
-                price: nasdaqData.price, 
-                change: nasdaqData.change, 
-                changePercent: nasdaqData.changePercent 
+            {
+                symbol: "^IXIC",
+                price: nasdaqData.price,
+                change: nasdaqData.change,
+                changePercent: nasdaqData.changePercent
             },
-            { 
-                symbol: "^GSPC", 
-                price: sp500Data.price, 
-                change: sp500Data.change, 
-                changePercent: sp500Data.changePercent 
+            {
+                symbol: "^GSPC",
+                price: sp500Data.price,
+                change: sp500Data.change,
+                changePercent: sp500Data.changePercent
             },
-            { 
-                symbol: "USDKRW=X", 
-                price: usdkrwData.price, 
-                change: usdkrwData.change, 
-                changePercent: usdkrwData.changePercent 
+            {
+                symbol: "USDKRW=X",
+                price: usdkrwData.price,
+                change: usdkrwData.change,
+                changePercent: usdkrwData.changePercent
             }
         ];
     } catch (error) {
@@ -3976,12 +4213,12 @@ export async function getGlobalIndicesKIS() {
 // 네이버 금융 크롤링을 통한 실시간 데이터 (가장 안정적)
 export async function getGlobalIndicesNaver() {
     console.log("[Action] Getting REAL-TIME data by crawling Naver Finance.");
-    
+
     try {
         // 병렬로 모든 데이터 크롤링
         const [kospiData, nasdaqData, sp500Data, usdkrwData] = await Promise.all([
             crawlNaverKospi(),
-            crawlNaverNasdaq(), 
+            crawlNaverNasdaq(),
             crawlNaverSP500(),
             crawlNaverUSDKRW()
         ]);
@@ -3989,29 +4226,29 @@ export async function getGlobalIndicesNaver() {
         console.log('Naver Crawling Results:', { kospiData, nasdaqData, sp500Data, usdkrwData });
 
         return [
-            { 
-                symbol: "^KS11", 
-                price: kospiData.price, 
-                change: kospiData.change, 
-                changePercent: kospiData.changePercent 
+            {
+                symbol: "^KS11",
+                price: kospiData.price,
+                change: kospiData.change,
+                changePercent: kospiData.changePercent
             },
-            { 
-                symbol: "^IXIC", 
-                price: nasdaqData.price, 
-                change: nasdaqData.change, 
-                changePercent: nasdaqData.changePercent 
+            {
+                symbol: "^IXIC",
+                price: nasdaqData.price,
+                change: nasdaqData.change,
+                changePercent: nasdaqData.changePercent
             },
-            { 
-                symbol: "^GSPC", 
-                price: sp500Data.price, 
-                change: sp500Data.change, 
-                changePercent: sp500Data.changePercent 
+            {
+                symbol: "^GSPC",
+                price: sp500Data.price,
+                change: sp500Data.change,
+                changePercent: sp500Data.changePercent
             },
-            { 
-                symbol: "USDKRW=X", 
-                price: usdkrwData.price, 
-                change: usdkrwData.change, 
-                changePercent: usdkrwData.changePercent 
+            {
+                symbol: "USDKRW=X",
+                price: usdkrwData.price,
+                change: usdkrwData.change,
+                changePercent: usdkrwData.changePercent
             }
         ];
     } catch (error) {
@@ -4033,31 +4270,31 @@ async function crawlNaverKospi() {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
         });
-        
+
         if (!response.ok) {
             throw new Error('Naver KOSPI crawling failed');
         }
-        
+
         const html = await response.text();
-        
+
         // 정규식으로 데이터 추출
         const priceMatch = html.match(/id="now_value"[^>]*>([0-9,]+\.[0-9]+)/);
         const changeMatch = html.match(/id="change_value_and_rate"[^>]*>.*?([+-]?[0-9,]+\.[0-9]+).*?([+-]?[0-9,]+\.[0-9]+)%/);
-        
+
         if (priceMatch && changeMatch) {
             const price = parseFloat(priceMatch[1].replace(/,/g, ''));
             const change = parseFloat(changeMatch[1].replace(/,/g, ''));
             const changePercent = parseFloat(changeMatch[2].replace(/,/g, ''));
-            
+
             console.log('Naver KOSPI crawled:', { price, change, changePercent });
-            
+
             return {
                 price: price || 0,
                 change: change || 0,
                 changePercent: changePercent || 0
             };
         }
-        
+
         throw new Error('Failed to parse KOSPI data');
     } catch (error) {
         console.error('Naver KOSPI crawling error:', error);
@@ -4073,31 +4310,31 @@ async function crawlNaverNasdaq() {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
         });
-        
+
         if (!response.ok) {
             throw new Error('Naver NASDAQ crawling failed');
         }
-        
+
         const html = await response.text();
-        
+
         // 정규식으로 데이터 추출
         const priceMatch = html.match(/id="now_value"[^>]*>([0-9,]+\.[0-9]+)/);
         const changeMatch = html.match(/id="change_value_and_rate"[^>]*>.*?([+-]?[0-9,]+\.[0-9]+).*?([+-]?[0-9,]+\.[0-9]+)%/);
-        
+
         if (priceMatch && changeMatch) {
             const price = parseFloat(priceMatch[1].replace(/,/g, ''));
             const change = parseFloat(changeMatch[1].replace(/,/g, ''));
             const changePercent = parseFloat(changeMatch[2].replace(/,/g, ''));
-            
+
             console.log('Naver NASDAQ crawled:', { price, change, changePercent });
-            
+
             return {
                 price: price || 0,
                 change: change || 0,
                 changePercent: changePercent || 0
             };
         }
-        
+
         throw new Error('Failed to parse NASDAQ data');
     } catch (error) {
         console.error('Naver NASDAQ crawling error:', error);
@@ -4113,31 +4350,31 @@ async function crawlNaverSP500() {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
         });
-        
+
         if (!response.ok) {
             throw new Error('Naver S&P500 crawling failed');
         }
-        
+
         const html = await response.text();
-        
+
         // 정규식으로 데이터 추출
         const priceMatch = html.match(/id="now_value"[^>]*>([0-9,]+\.[0-9]+)/);
         const changeMatch = html.match(/id="change_value_and_rate"[^>]*>.*?([+-]?[0-9,]+\.[0-9]+).*?([+-]?[0-9,]+\.[0-9]+)%/);
-        
+
         if (priceMatch && changeMatch) {
             const price = parseFloat(priceMatch[1].replace(/,/g, ''));
             const change = parseFloat(changeMatch[1].replace(/,/g, ''));
             const changePercent = parseFloat(changeMatch[2].replace(/,/g, ''));
-            
+
             console.log('Naver S&P500 crawled:', { price, change, changePercent });
-            
+
             return {
                 price: price || 0,
                 change: change || 0,
                 changePercent: changePercent || 0
             };
         }
-        
+
         throw new Error('Failed to parse S&P500 data');
     } catch (error) {
         console.error('Naver S&P500 crawling error:', error);
@@ -4153,31 +4390,31 @@ async function crawlNaverUSDKRW() {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
         });
-        
+
         if (!response.ok) {
             throw new Error('Naver USD/KRW crawling failed');
         }
-        
+
         const html = await response.text();
-        
+
         // 정규식으로 데이터 추출
         const priceMatch = html.match(/id="now_value"[^>]*>([0-9,]+\.[0-9]+)/);
         const changeMatch = html.match(/id="change_value_and_rate"[^>]*>.*?([+-]?[0-9,]+\.[0-9]+).*?([+-]?[0-9,]+\.[0-9]+)%/);
-        
+
         if (priceMatch && changeMatch) {
             const price = parseFloat(priceMatch[1].replace(/,/g, ''));
             const change = parseFloat(changeMatch[1].replace(/,/g, ''));
             const changePercent = parseFloat(changeMatch[2].replace(/,/g, ''));
-            
+
             console.log('Naver USD/KRW crawled:', { price, change, changePercent });
-            
+
             return {
                 price: price || 0,
                 change: change || 0,
                 changePercent: changePercent || 0
             };
         }
-        
+
         throw new Error('Failed to parse USD/KRW data');
     } catch (error) {
         console.error('Naver USD/KRW crawling error:', error);
@@ -4190,7 +4427,7 @@ async function crawlNaverUSDKRW() {
 function getFallbackData() {
     const now = new Date();
     const variation = Math.sin(now.getTime() / 300000) * 0.5; // 5분마다 약간 변화
-    
+
     return [
         {
             symbol: "^KS11",
@@ -4199,7 +4436,7 @@ function getFallbackData() {
             changePercent: 0.21 + (variation * 0.1)
         },
         {
-            symbol: "^IXIC", 
+            symbol: "^IXIC",
             price: 16926.58 + (variation * 10),
             change: 145.37 + (variation * 5),
             changePercent: 0.87 + (variation * 0.1)
@@ -4222,7 +4459,7 @@ function getFallbackData() {
 // Investing.com 크롤링 (백업용)
 export async function getGlobalIndicesInvesting() {
     console.log("[Action] Getting REAL-TIME data by crawling Investing.com (backup).");
-    
+
     try {
         const [kospiData, nasdaqData, sp500Data, usdkrwData] = await Promise.all([
             crawlInvestingKospi(),
@@ -4234,29 +4471,29 @@ export async function getGlobalIndicesInvesting() {
         console.log('Investing.com Crawling Results:', { kospiData, nasdaqData, sp500Data, usdkrwData });
 
         return [
-            { 
-                symbol: "^KS11", 
-                price: kospiData.price, 
-                change: kospiData.change, 
-                changePercent: kospiData.changePercent 
+            {
+                symbol: "^KS11",
+                price: kospiData.price,
+                change: kospiData.change,
+                changePercent: kospiData.changePercent
             },
-            { 
-                symbol: "^IXIC", 
-                price: nasdaqData.price, 
-                change: nasdaqData.change, 
-                changePercent: nasdaqData.changePercent 
+            {
+                symbol: "^IXIC",
+                price: nasdaqData.price,
+                change: nasdaqData.change,
+                changePercent: nasdaqData.changePercent
             },
-            { 
-                symbol: "^GSPC", 
-                price: sp500Data.price, 
-                change: sp500Data.change, 
-                changePercent: sp500Data.changePercent 
+            {
+                symbol: "^GSPC",
+                price: sp500Data.price,
+                change: sp500Data.change,
+                changePercent: sp500Data.changePercent
             },
-            { 
-                symbol: "USDKRW=X", 
-                price: usdkrwData.price, 
-                change: usdkrwData.change, 
-                changePercent: usdkrwData.changePercent 
+            {
+                symbol: "USDKRW=X",
+                price: usdkrwData.price,
+                change: usdkrwData.change,
+                changePercent: usdkrwData.changePercent
             }
         ];
     } catch (error) {
@@ -4273,18 +4510,18 @@ async function crawlInvestingKospi() {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
         });
-        
+
         if (!response.ok) {
             throw new Error('Investing.com KOSPI failed');
         }
-        
+
         const html = await response.text();
-        
+
         // Investing.com 데이터 파싱
         const priceMatch = html.match(/data-test="instrument-price-last"[^>]*>([0-9,]+\.[0-9]+)/);
         const changeMatch = html.match(/data-test="instrument-price-change"[^>]*>([+-]?[0-9,]+\.[0-9]+)/);
         const percentMatch = html.match(/data-test="instrument-price-change-percent"[^>]*>\(([+-]?[0-9,]+\.[0-9]+)%\)/);
-        
+
         if (priceMatch && changeMatch && percentMatch) {
             return {
                 price: parseFloat(priceMatch[1].replace(/,/g, '')),
@@ -4292,7 +4529,7 @@ async function crawlInvestingKospi() {
                 changePercent: parseFloat(percentMatch[1].replace(/,/g, ''))
             };
         }
-        
+
         throw new Error('Failed to parse Investing.com KOSPI');
     } catch (error) {
         console.error('Investing.com KOSPI error:', error);
@@ -4308,17 +4545,17 @@ async function crawlInvestingNasdaq() {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
         });
-        
+
         if (!response.ok) {
             throw new Error('Investing.com NASDAQ failed');
         }
-        
+
         const html = await response.text();
-        
+
         const priceMatch = html.match(/data-test="instrument-price-last"[^>]*>([0-9,]+\.[0-9]+)/);
         const changeMatch = html.match(/data-test="instrument-price-change"[^>]*>([+-]?[0-9,]+\.[0-9]+)/);
         const percentMatch = html.match(/data-test="instrument-price-change-percent"[^>]*>\(([+-]?[0-9,]+\.[0-9]+)%\)/);
-        
+
         if (priceMatch && changeMatch && percentMatch) {
             return {
                 price: parseFloat(priceMatch[1].replace(/,/g, '')),
@@ -4326,7 +4563,7 @@ async function crawlInvestingNasdaq() {
                 changePercent: parseFloat(percentMatch[1].replace(/,/g, ''))
             };
         }
-        
+
         throw new Error('Failed to parse Investing.com NASDAQ');
     } catch (error) {
         console.error('Investing.com NASDAQ error:', error);
@@ -4342,17 +4579,17 @@ async function crawlInvestingSP500() {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
         });
-        
+
         if (!response.ok) {
             throw new Error('Investing.com S&P500 failed');
         }
-        
+
         const html = await response.text();
-        
+
         const priceMatch = html.match(/data-test="instrument-price-last"[^>]*>([0-9,]+\.[0-9]+)/);
         const changeMatch = html.match(/data-test="instrument-price-change"[^>]*>([+-]?[0-9,]+\.[0-9]+)/);
         const percentMatch = html.match(/data-test="instrument-price-change-percent"[^>]*>\(([+-]?[0-9,]+\.[0-9]+)%\)/);
-        
+
         if (priceMatch && changeMatch && percentMatch) {
             return {
                 price: parseFloat(priceMatch[1].replace(/,/g, '')),
@@ -4360,7 +4597,7 @@ async function crawlInvestingSP500() {
                 changePercent: parseFloat(percentMatch[1].replace(/,/g, ''))
             };
         }
-        
+
         throw new Error('Failed to parse Investing.com S&P500');
     } catch (error) {
         console.error('Investing.com S&P500 error:', error);
@@ -4376,17 +4613,17 @@ async function crawlInvestingUSDKRW() {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
         });
-        
+
         if (!response.ok) {
             throw new Error('Investing.com USD/KRW failed');
         }
-        
+
         const html = await response.text();
-        
+
         const priceMatch = html.match(/data-test="instrument-price-last"[^>]*>([0-9,]+\.[0-9]+)/);
         const changeMatch = html.match(/data-test="instrument-price-change"[^>]*>([+-]?[0-9,]+\.[0-9]+)/);
         const percentMatch = html.match(/data-test="instrument-price-change-percent"[^>]*>\(([+-]?[0-9,]+\.[0-9]+)%\)/);
-        
+
         if (priceMatch && changeMatch && percentMatch) {
             return {
                 price: parseFloat(priceMatch[1].replace(/,/g, '')),
@@ -4394,7 +4631,7 @@ async function crawlInvestingUSDKRW() {
                 changePercent: parseFloat(percentMatch[1].replace(/,/g, ''))
             };
         }
-        
+
         throw new Error('Failed to parse Investing.com USD/KRW');
     } catch (error) {
         console.error('Investing.com USD/KRW error:', error);
@@ -4405,7 +4642,7 @@ async function crawlInvestingUSDKRW() {
 // 멀티소스 크롤링 (가장 안정적 - 여러 소스에서 데이터 수집)
 export async function getGlobalIndicesMultiSource() {
     console.log("[Action] Getting REAL-TIME data from multiple sources for maximum reliability.");
-    
+
     try {
         // 동시에 여러 소스에서 데이터 가져오기
         const [naverData, investingData, kisData] = await Promise.allSettled([
@@ -4414,7 +4651,7 @@ export async function getGlobalIndicesMultiSource() {
             getGlobalIndicesKIS()
         ]);
 
-        console.log('Multi-source results:', { 
+        console.log('Multi-source results:', {
             naver: naverData.status === 'fulfilled' ? 'SUCCESS' : 'FAILED',
             investing: investingData.status === 'fulfilled' ? 'SUCCESS' : 'FAILED',
             kis: kisData.status === 'fulfilled' ? 'SUCCESS' : 'FAILED'
@@ -4422,15 +4659,15 @@ export async function getGlobalIndicesMultiSource() {
 
         // 성공한 데이터 중에서 가장 좋은 것 선택
         const validResults = [];
-        
+
         if (naverData.status === 'fulfilled' && hasValidData(naverData.value)) {
             validResults.push({ source: 'Naver', data: naverData.value, priority: 3 });
         }
-        
+
         if (investingData.status === 'fulfilled' && hasValidData(investingData.value)) {
             validResults.push({ source: 'Investing', data: investingData.value, priority: 2 });
         }
-        
+
         if (kisData.status === 'fulfilled' && hasValidData(kisData.value)) {
             validResults.push({ source: 'KIS', data: kisData.value, priority: 1 });
         }
@@ -4443,7 +4680,7 @@ export async function getGlobalIndicesMultiSource() {
         }
 
         throw new Error('All sources failed');
-        
+
     } catch (error) {
         console.error("All multi-source crawling failed:", error);
         return getFallbackData();
@@ -4453,7 +4690,7 @@ export async function getGlobalIndicesMultiSource() {
 // 데이터 유효성 검사
 function hasValidData(data: any[]): boolean {
     if (!data || !Array.isArray(data) || data.length === 0) return false;
-    
+
     // 최소 2개 이상의 지수가 0이 아닌 값을 가져야 함
     const validCount = data.filter(item => item.price > 0).length;
     return validCount >= 2;
@@ -4462,7 +4699,7 @@ function hasValidData(data: any[]): boolean {
 // 빠른 실시간 데이터 (여러 소스 중 가장 빠른 응답 사용)
 export async function getGlobalIndicesRace() {
     console.log("[Action] Getting REAL-TIME data using race condition (fastest response).");
-    
+
     try {
         // Promise.race로 가장 빠른 응답 사용
         const racePromises = [
@@ -4472,7 +4709,7 @@ export async function getGlobalIndicesRace() {
         ];
 
         const result = await Promise.race(racePromises);
-        
+
         if (hasValidData(result as any[])) {
             console.log('Race condition won by first valid response');
             return result;
@@ -4480,7 +4717,7 @@ export async function getGlobalIndicesRace() {
             console.log('Race winner had invalid data, trying multi-source');
             return await getGlobalIndicesMultiSource();
         }
-        
+
     } catch (error) {
         console.error("Race condition failed:", error);
         return getFallbackData();
@@ -4490,11 +4727,11 @@ export async function getGlobalIndicesRace() {
 // Yahoo Finance를 JSON API로 직접 호출 (CORS 회피)
 export async function getGlobalIndicesYahooJSON() {
     console.log("[Action] Getting REAL-TIME data from Yahoo Finance JSON API.");
-    
+
     try {
         const symbols = ['%5EKS11', '%5EIXIC', '%5EGSPC', 'USDKRW%3DX']; // URL 인코딩된 심볼들
         const symbolString = symbols.join('%2C');
-        
+
         const response = await fetch(
             `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbolString}&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent`,
             {
@@ -4503,14 +4740,14 @@ export async function getGlobalIndicesYahooJSON() {
                 }
             }
         );
-        
+
         if (!response.ok) {
             throw new Error('Yahoo JSON API failed');
         }
-        
+
         const data = await response.json();
         console.log('Yahoo JSON API response:', data);
-        
+
         if (data.quoteResponse && data.quoteResponse.result) {
             const quotes = data.quoteResponse.result;
             return quotes.map((quote: any) => ({
@@ -4520,9 +4757,9 @@ export async function getGlobalIndicesYahooJSON() {
                 changePercent: quote.regularMarketChangePercent || 0
             }));
         }
-        
+
         throw new Error('No valid Yahoo JSON data');
-        
+
     } catch (error) {
         console.error("Yahoo JSON API error:", error);
         return getFallbackData();
@@ -4532,12 +4769,12 @@ export async function getGlobalIndicesYahooJSON() {
 // 무료 공개 API 모음 (실제 작동 보장)
 export async function getGlobalIndicesPublic() {
     console.log("[Action] Getting REAL-TIME data from verified public APIs.");
-    
+
     try {
         // 병렬로 각 지수 데이터 가져오기
         const [kospiData, nasdaqData, sp500Data, usdkrwData] = await Promise.all([
             getKospiFromPublicAPI(),
-            getNasdaqFromPublicAPI(), 
+            getNasdaqFromPublicAPI(),
             getSP500FromPublicAPI(),
             getUSDKRWFromPublicAPI()
         ]);
@@ -4545,29 +4782,29 @@ export async function getGlobalIndicesPublic() {
         console.log('Public API Results:', { kospiData, nasdaqData, sp500Data, usdkrwData });
 
         return [
-            { 
-                symbol: "^KS11", 
-                price: kospiData.price, 
-                change: kospiData.change, 
-                changePercent: kospiData.changePercent 
+            {
+                symbol: "^KS11",
+                price: kospiData.price,
+                change: kospiData.change,
+                changePercent: kospiData.changePercent
             },
-            { 
-                symbol: "^IXIC", 
-                price: nasdaqData.price, 
-                change: nasdaqData.change, 
-                changePercent: nasdaqData.changePercent 
+            {
+                symbol: "^IXIC",
+                price: nasdaqData.price,
+                change: nasdaqData.change,
+                changePercent: nasdaqData.changePercent
             },
-            { 
-                symbol: "^GSPC", 
-                price: sp500Data.price, 
-                change: sp500Data.change, 
-                changePercent: sp500Data.changePercent 
+            {
+                symbol: "^GSPC",
+                price: sp500Data.price,
+                change: sp500Data.change,
+                changePercent: sp500Data.changePercent
             },
-            { 
-                symbol: "USDKRW=X", 
-                price: usdkrwData.price, 
-                change: usdkrwData.change, 
-                changePercent: usdkrwData.changePercent 
+            {
+                symbol: "USDKRW=X",
+                price: usdkrwData.price,
+                change: usdkrwData.change,
+                changePercent: usdkrwData.changePercent
             }
         ];
     } catch (error) {
@@ -4587,18 +4824,18 @@ async function getKospiFromPublicAPI() {
                 'Content-Type': 'application/json'
             }
         });
-        
+
         if (response.ok) {
             const data = await response.json();
             console.log('Dunamu API response:', data);
-            
+
             // 실제 코스피 대신 원달러 역산으로 코스피 추정
             if (data && data.length > 0) {
                 const usdkrw = data[0].basePrice;
                 // 코스피는 보통 2400~2600 범위이므로 적절한 값으로 계산
                 const estimatedKospi = 2450 + (Math.random() - 0.5) * 100;
                 const change = (Math.random() - 0.5) * 20;
-                
+
                 return {
                     price: parseFloat(estimatedKospi.toFixed(2)),
                     change: parseFloat(change.toFixed(2)),
@@ -4606,7 +4843,7 @@ async function getKospiFromPublicAPI() {
                 };
             }
         }
-        
+
         throw new Error('Kospi API failed');
     } catch (error) {
         console.error('Kospi API error:', error);
@@ -4615,7 +4852,7 @@ async function getKospiFromPublicAPI() {
         const variation = Math.sin(Date.now() / 300000) * 15; // 5분마다 변화
         const price = basePrice + variation;
         const change = variation;
-        
+
         return {
             price: parseFloat(price.toFixed(2)),
             change: parseFloat(change.toFixed(2)),
@@ -4634,7 +4871,7 @@ async function getNasdaqFromPublicAPI() {
                 'Accept': 'application/json'
             }
         });
-        
+
         if (response.ok) {
             const data = await response.json();
             // 환율 데이터를 기반으로 나스닥 추정 (실제 나스닥 API 대신)
@@ -4642,14 +4879,14 @@ async function getNasdaqFromPublicAPI() {
             const variation = Math.sin(Date.now() / 240000) * 200; // 4분마다 변화
             const price = baseNasdaq + variation;
             const change = variation;
-            
+
             return {
                 price: parseFloat(price.toFixed(2)),
                 change: parseFloat(change.toFixed(2)),
                 changePercent: parseFloat((change / baseNasdaq * 100).toFixed(2))
             };
         }
-        
+
         throw new Error('Nasdaq API failed');
     } catch (error) {
         console.error('Nasdaq API error:', error);
@@ -4657,7 +4894,7 @@ async function getNasdaqFromPublicAPI() {
         const variation = Math.sin(Date.now() / 280000) * 180;
         const price = basePrice + variation;
         const change = variation;
-        
+
         return {
             price: parseFloat(price.toFixed(2)),
             change: parseFloat(change.toFixed(2)),
@@ -4676,7 +4913,7 @@ async function getSP500FromPublicAPI() {
                 'Accept': 'application/json'
             }
         });
-        
+
         if (response.ok) {
             const data = await response.json();
             // 비트코인 가격 변동을 기반으로 S&P 500 변동 추정
@@ -4684,14 +4921,14 @@ async function getSP500FromPublicAPI() {
             const variation = Math.sin(Date.now() / 320000) * 50; // 변동 패턴
             const price = baseSP500 + variation;
             const change = variation;
-            
+
             return {
                 price: parseFloat(price.toFixed(2)),
                 change: parseFloat(change.toFixed(2)),
                 changePercent: parseFloat((change / baseSP500 * 100).toFixed(2))
             };
         }
-        
+
         throw new Error('S&P500 API failed');
     } catch (error) {
         console.error('S&P500 API error:', error);
@@ -4699,7 +4936,7 @@ async function getSP500FromPublicAPI() {
         const variation = Math.sin(Date.now() / 360000) * 40;
         const price = basePrice + variation;
         const change = variation;
-        
+
         return {
             price: parseFloat(price.toFixed(2)),
             change: parseFloat(change.toFixed(2)),
@@ -4718,16 +4955,16 @@ async function getUSDKRWFromPublicAPI() {
                 'Accept': 'application/json'
             }
         });
-        
+
         if (response.ok) {
             const data = await response.json();
-            
+
             if (data && data.length > 0) {
                 const forex = data[0];
                 const price = forex.basePrice;
                 const change = forex.changePrice;
                 const changePercent = forex.changeRate;
-                
+
                 return {
                     price: parseFloat(price.toFixed(2)),
                     change: parseFloat(change.toFixed(2)),
@@ -4735,7 +4972,7 @@ async function getUSDKRWFromPublicAPI() {
                 };
             }
         }
-        
+
         throw new Error('USD/KRW API failed');
     } catch (error) {
         console.error('USD/KRW API error:', error);
@@ -4743,7 +4980,7 @@ async function getUSDKRWFromPublicAPI() {
         const variation = Math.sin(Date.now() / 180000) * 5;
         const price = basePrice + variation;
         const change = variation;
-        
+
         return {
             price: parseFloat(price.toFixed(2)),
             change: parseFloat(change.toFixed(2)),
@@ -4755,20 +4992,20 @@ async function getUSDKRWFromPublicAPI() {
 // 실시간 느낌의 폴백 데이터 (모든 API 실패시)
 function getRealFallbackData() {
     const now = Date.now();
-    
+
     // 각 지수마다 다른 주기로 변화하는 실시간 데이터
     const kospiBase = 2485.65;
     const kospiVar = Math.sin(now / 300000) * 15 + Math.cos(now / 180000) * 8;
-    
+
     const nasdaqBase = 16926.58;
     const nasdaqVar = Math.sin(now / 240000) * 180 + Math.cos(now / 150000) * 95;
-    
+
     const sp500Base = 5447.87;
     const sp500Var = Math.sin(now / 360000) * 40 + Math.cos(now / 200000) * 25;
-    
+
     const usdkrwBase = 1328.50;
     const usdkrwVar = Math.sin(now / 180000) * 5 + Math.cos(now / 120000) * 3;
-    
+
     return [
         {
             symbol: "^KS11",
@@ -4777,7 +5014,7 @@ function getRealFallbackData() {
             changePercent: parseFloat((kospiVar / kospiBase * 100).toFixed(2))
         },
         {
-            symbol: "^IXIC", 
+            symbol: "^IXIC",
             price: parseFloat((nasdaqBase + nasdaqVar).toFixed(2)),
             change: parseFloat(nasdaqVar.toFixed(2)),
             changePercent: parseFloat((nasdaqVar / nasdaqBase * 100).toFixed(2))
@@ -4800,12 +5037,12 @@ function getRealFallbackData() {
 // 완전 무료 실시간 API (100% 작동 보장)
 export async function getGlobalIndicesRealAPI() {
     console.log("[Action] Getting REAL-TIME data from guaranteed free APIs.");
-    
+
     try {
         // 병렬로 각 지수 데이터 가져오기
         const [kospiData, nasdaqData, sp500Data, usdkrwData] = await Promise.all([
             getRealKospiData(),
-            getRealNasdaqData(), 
+            getRealNasdaqData(),
             getRealSP500Data(),
             getRealUSDKRWData()
         ]);
@@ -4813,29 +5050,29 @@ export async function getGlobalIndicesRealAPI() {
         console.log('Real API Results:', { kospiData, nasdaqData, sp500Data, usdkrwData });
 
         return [
-            { 
-                symbol: "^KS11", 
-                price: kospiData.price, 
-                change: kospiData.change, 
-                changePercent: kospiData.changePercent 
+            {
+                symbol: "^KS11",
+                price: kospiData.price,
+                change: kospiData.change,
+                changePercent: kospiData.changePercent
             },
-            { 
-                symbol: "^IXIC", 
-                price: nasdaqData.price, 
-                change: nasdaqData.change, 
-                changePercent: nasdaqData.changePercent 
+            {
+                symbol: "^IXIC",
+                price: nasdaqData.price,
+                change: nasdaqData.change,
+                changePercent: nasdaqData.changePercent
             },
-            { 
-                symbol: "^GSPC", 
-                price: sp500Data.price, 
-                change: sp500Data.change, 
-                changePercent: sp500Data.changePercent 
+            {
+                symbol: "^GSPC",
+                price: sp500Data.price,
+                change: sp500Data.change,
+                changePercent: sp500Data.changePercent
             },
-            { 
-                symbol: "USDKRW=X", 
-                price: usdkrwData.price, 
-                change: usdkrwData.change, 
-                changePercent: usdkrwData.changePercent 
+            {
+                symbol: "USDKRW=X",
+                price: usdkrwData.price,
+                change: usdkrwData.change,
+                changePercent: usdkrwData.changePercent
             }
         ];
     } catch (error) {
@@ -4854,11 +5091,11 @@ async function getRealKospiData() {
                 'Accept': 'application/json'
             }
         });
-        
+
         if (response.ok) {
             const data = await response.json();
             console.log('Polygon API response:', data);
-            
+
             // 애플 주가를 기반으로 코스피 추정 (비례 관계)
             if (data.results && data.results.length > 0) {
                 const applePrice = data.results[0].c; // 종가
@@ -4866,7 +5103,7 @@ async function getRealKospiData() {
                 const appleInfluence = (applePrice - 150) * 10; // 애플 $150 기준
                 const price = kospiBase + appleInfluence;
                 const change = appleInfluence;
-                
+
                 return {
                     price: parseFloat(price.toFixed(2)),
                     change: parseFloat(change.toFixed(2)),
@@ -4874,7 +5111,7 @@ async function getRealKospiData() {
                 };
             }
         }
-        
+
         throw new Error('Kospi Real API failed');
     } catch (error) {
         console.error('Kospi Real API error:', error);
@@ -4885,7 +5122,7 @@ async function getRealKospiData() {
         const randomVar = (Math.random() - 0.5) * 8; // 랜덤 변동
         const price = basePrice + timeVar + randomVar;
         const change = timeVar + randomVar;
-        
+
         return {
             price: parseFloat(price.toFixed(2)),
             change: parseFloat(change.toFixed(2)),
@@ -4904,18 +5141,18 @@ async function getRealNasdaqData() {
                 'Accept': 'application/json'
             }
         });
-        
+
         if (response.ok) {
             const data = await response.json();
             console.log('IEX Cloud response:', data);
-            
+
             if (data && data.length > 0) {
                 const qqq = data[0];
                 // QQQ ETF 가격을 나스닥 지수로 변환 (약 40:1 비율)
                 const nasdaqPrice = qqq.latestPrice * 40;
                 const nasdaqChange = qqq.change * 40;
                 const changePercent = qqq.changePercent;
-                
+
                 return {
                     price: parseFloat(nasdaqPrice.toFixed(2)),
                     change: parseFloat(nasdaqChange.toFixed(2)),
@@ -4923,7 +5160,7 @@ async function getRealNasdaqData() {
                 };
             }
         }
-        
+
         throw new Error('Nasdaq Real API failed');
     } catch (error) {
         console.error('Nasdaq Real API error:', error);
@@ -4933,7 +5170,7 @@ async function getRealNasdaqData() {
         const randomVar = (Math.random() - 0.5) * 95;
         const price = basePrice + timeVar + randomVar;
         const change = timeVar + randomVar;
-        
+
         return {
             price: parseFloat(price.toFixed(2)),
             change: parseFloat(change.toFixed(2)),
@@ -4952,18 +5189,18 @@ async function getRealSP500Data() {
                 'Accept': 'application/json'
             }
         });
-        
+
         if (response.ok) {
             const data = await response.json();
             console.log('World Trading Data response:', data);
-            
+
             if (data.data && data.data.length > 0) {
                 const spy = data.data[0];
                 // SPY ETF 가격을 S&P 500 지수로 변환 (약 10:1 비율)
                 const sp500Price = spy.price * 10;
                 const sp500Change = spy.day_change * 10;
                 const changePercent = (spy.day_change / spy.price) * 100;
-                
+
                 return {
                     price: parseFloat(sp500Price.toFixed(2)),
                     change: parseFloat(sp500Change.toFixed(2)),
@@ -4971,7 +5208,7 @@ async function getRealSP500Data() {
                 };
             }
         }
-        
+
         throw new Error('S&P500 Real API failed');
     } catch (error) {
         console.error('S&P500 Real API error:', error);
@@ -4981,7 +5218,7 @@ async function getRealSP500Data() {
         const randomVar = (Math.random() - 0.5) * 25;
         const price = basePrice + timeVar + randomVar;
         const change = timeVar + randomVar;
-        
+
         return {
             price: parseFloat(price.toFixed(2)),
             change: parseFloat(change.toFixed(2)),
@@ -5000,18 +5237,18 @@ async function getRealUSDKRWData() {
                 'Accept': 'application/json'
             }
         });
-        
+
         if (response.ok) {
             const data = await response.json();
             console.log('ExchangeRate API response:', data);
-            
+
             if (data.rates && data.rates.KRW) {
                 const usdkrw = data.rates.KRW;
                 // 이전 값과 비교하여 변화율 계산 (로컬 스토리지 시뮬레이션)
                 const previousRate = 1328.50; // 기준값
                 const change = usdkrw - previousRate;
                 const changePercent = (change / previousRate) * 100;
-                
+
                 return {
                     price: parseFloat(usdkrw.toFixed(2)),
                     change: parseFloat(change.toFixed(2)),
@@ -5019,7 +5256,7 @@ async function getRealUSDKRWData() {
                 };
             }
         }
-        
+
         // 업비트 API로 폴백
         return await getUSDKRWFromPublicAPI();
     } catch (error) {
@@ -5031,7 +5268,7 @@ async function getRealUSDKRWData() {
 // Finnhub 무료 API (실제 데이터)
 export async function getGlobalIndicesFinnhubFree() {
     console.log("[Action] Getting REAL-TIME data from Finnhub free API.");
-    
+
     try {
         // Finnhub의 무료 엔드포인트들 (API 키 없이 사용 가능한 데모 데이터)
         const symbols = ['^IXIC', '^GSPC', 'USDKRW=X'];
@@ -5043,7 +5280,7 @@ export async function getGlobalIndicesFinnhubFree() {
                         'Accept': 'application/json'
                     }
                 });
-                
+
                 if (response.ok) {
                     const data = await response.json();
                     return {
@@ -5053,30 +5290,30 @@ export async function getGlobalIndicesFinnhubFree() {
                         changePercent: data.dp || 0 // Change percent
                     };
                 }
-                
+
                 throw new Error(`Finnhub API failed for ${symbol}`);
             } catch (error) {
                 console.error(`Finnhub ${symbol} error:`, error);
                 return null;
             }
         });
-        
+
         const results = await Promise.all(promises);
         const validResults = results.filter(result => result !== null);
-        
+
         // 코스피는 별도 로직으로 추가
         const kospiData = await getRealKospiData();
-        
+
         return [
-            { 
-                symbol: "^KS11", 
-                price: kospiData.price, 
-                change: kospiData.change, 
-                changePercent: kospiData.changePercent 
+            {
+                symbol: "^KS11",
+                price: kospiData.price,
+                change: kospiData.change,
+                changePercent: kospiData.changePercent
             },
             ...validResults
         ];
-        
+
     } catch (error) {
         console.error("Finnhub free API error:", error);
         return getRealFallbackData();
@@ -5086,11 +5323,11 @@ export async function getGlobalIndicesFinnhubFree() {
 // Financial Modeling Prep 무료 API (실제 실시간 데이터)
 export async function getGlobalIndicesFMP() {
     console.log("[Action] Getting REAL-TIME data from Financial Modeling Prep (FMP) API.");
-    
+
     try {
         // FMP 무료 API 키 (demo 계정)
         const apiKey = 'demo'; // 실제로는 무료 가입 후 키 발급
-        
+
         // 병렬로 각 지수 데이터 가져오기
         const [kospiData, nasdaqData, sp500Data, usdkrwData] = await Promise.all([
             getFMPData('005930.KS', apiKey), // 삼성전자 (코스피 대표)
@@ -5102,29 +5339,29 @@ export async function getGlobalIndicesFMP() {
         console.log('FMP API Results:', { kospiData, nasdaqData, sp500Data, usdkrwData });
 
         return [
-            { 
-                symbol: "^KS11", 
-                price: kospiData.price, 
-                change: kospiData.change, 
-                changePercent: kospiData.changePercent 
+            {
+                symbol: "^KS11",
+                price: kospiData.price,
+                change: kospiData.change,
+                changePercent: kospiData.changePercent
             },
-            { 
-                symbol: "^IXIC", 
-                price: nasdaqData.price, 
-                change: nasdaqData.change, 
-                changePercent: nasdaqData.changePercent 
+            {
+                symbol: "^IXIC",
+                price: nasdaqData.price,
+                change: nasdaqData.change,
+                changePercent: nasdaqData.changePercent
             },
-            { 
-                symbol: "^GSPC", 
-                price: sp500Data.price, 
-                change: sp500Data.change, 
-                changePercent: sp500Data.changePercent 
+            {
+                symbol: "^GSPC",
+                price: sp500Data.price,
+                change: sp500Data.change,
+                changePercent: sp500Data.changePercent
             },
-            { 
-                symbol: "USDKRW=X", 
-                price: usdkrwData.price, 
-                change: usdkrwData.change, 
-                changePercent: usdkrwData.changePercent 
+            {
+                symbol: "USDKRW=X",
+                price: usdkrwData.price,
+                change: usdkrwData.change,
+                changePercent: usdkrwData.changePercent
             }
         ];
     } catch (error) {
@@ -5142,17 +5379,17 @@ async function getFMPData(symbol: string, apiKey: string) {
                 'Accept': 'application/json'
             }
         });
-        
+
         if (response.ok) {
             const data = await response.json();
             console.log(`FMP ${symbol} response:`, data);
-            
+
             if (data && data.length > 0) {
                 const quote = data[0];
                 let price = quote.price || 0;
                 let change = quote.change || 0;
                 let changePercent = quote.changesPercentage || 0;
-                
+
                 // 삼성전자 데이터를 코스피 지수로 변환
                 if (symbol === '005930.KS') {
                     price = price * 40; // 삼성전자 주가 * 40 ≈ 코스피
@@ -5168,7 +5405,7 @@ async function getFMPData(symbol: string, apiKey: string) {
                     price = price * 10; // SPY * 10 ≈ S&P 500
                     change = change * 10;
                 }
-                
+
                 return {
                     price: parseFloat(price.toFixed(2)),
                     change: parseFloat(change.toFixed(2)),
@@ -5176,7 +5413,7 @@ async function getFMPData(symbol: string, apiKey: string) {
                 };
             }
         }
-        
+
         throw new Error(`FMP API failed for ${symbol}`);
     } catch (error) {
         console.error(`FMP ${symbol} error:`, error);
@@ -5194,17 +5431,17 @@ async function getFMPForex(symbol: string, apiKey: string) {
                 'Accept': 'application/json'
             }
         });
-        
+
         if (response.ok) {
             const data = await response.json();
             console.log(`FMP Forex ${symbol} response:`, data);
-            
+
             if (data && data.length > 0) {
                 const forex = data[0];
                 const price = forex.price || 0;
                 const change = forex.change || 0;
                 const changePercent = forex.changesPercentage || 0;
-                
+
                 return {
                     price: parseFloat(price.toFixed(2)),
                     change: parseFloat(change.toFixed(2)),
@@ -5212,7 +5449,7 @@ async function getFMPForex(symbol: string, apiKey: string) {
                 };
             }
         }
-        
+
         throw new Error(`FMP Forex API failed for ${symbol}`);
     } catch (error) {
         console.error(`FMP Forex ${symbol} error:`, error);
@@ -5224,7 +5461,7 @@ async function getFMPForex(symbol: string, apiKey: string) {
 // 심볼별 폴백 데이터
 function getSymbolFallback(symbol: string) {
     const now = Date.now();
-    
+
     switch (symbol) {
         case '005930.KS': // 삼성전자 -> 코스피
             const kospiBase = 2485.65;
@@ -5235,7 +5472,7 @@ function getSymbolFallback(symbol: string) {
                 change: parseFloat(kospiVar.toFixed(2)),
                 changePercent: parseFloat((kospiVar / kospiBase * 100).toFixed(2))
             };
-            
+
         case 'QQQ': // 나스닥
             const nasdaqBase = 16926.58;
             const nasdaqVar = Math.sin(now / 240000) * 180 + Math.cos(now / 150000) * 95;
@@ -5245,7 +5482,7 @@ function getSymbolFallback(symbol: string) {
                 change: parseFloat(nasdaqVar.toFixed(2)),
                 changePercent: parseFloat((nasdaqVar / nasdaqBase * 100).toFixed(2))
             };
-            
+
         case 'SPY': // S&P 500
             const sp500Base = 5447.87;
             const sp500Var = Math.sin(now / 360000) * 40 + Math.cos(now / 200000) * 25;
@@ -5255,7 +5492,7 @@ function getSymbolFallback(symbol: string) {
                 change: parseFloat(sp500Var.toFixed(2)),
                 changePercent: parseFloat((sp500Var / sp500Base * 100).toFixed(2))
             };
-            
+
         default:
             return {
                 price: 100.00,
@@ -5268,11 +5505,11 @@ function getSymbolFallback(symbol: string) {
 // Alpha Vantage 무료 API (실제 실시간 데이터)
 export async function getGlobalIndicesAlphaVantageFree() {
     console.log("[Action] Getting REAL-TIME data from Alpha Vantage free API.");
-    
+
     try {
         // Alpha Vantage 무료 API 키 (demo)
         const apiKey = 'demo'; // 실제로는 무료 가입 후 키 발급
-        
+
         // 병렬로 각 데이터 가져오기
         const [kospiData, nasdaqData, sp500Data, usdkrwData] = await Promise.all([
             getAlphaVantageData('KOSPI', apiKey),
@@ -5282,29 +5519,29 @@ export async function getGlobalIndicesAlphaVantageFree() {
         ]);
 
         return [
-            { 
-                symbol: "^KS11", 
-                price: kospiData.price, 
-                change: kospiData.change, 
-                changePercent: kospiData.changePercent 
+            {
+                symbol: "^KS11",
+                price: kospiData.price,
+                change: kospiData.change,
+                changePercent: kospiData.changePercent
             },
-            { 
-                symbol: "^IXIC", 
-                price: nasdaqData.price, 
-                change: nasdaqData.change, 
-                changePercent: nasdaqData.changePercent 
+            {
+                symbol: "^IXIC",
+                price: nasdaqData.price,
+                change: nasdaqData.change,
+                changePercent: nasdaqData.changePercent
             },
-            { 
-                symbol: "^GSPC", 
-                price: sp500Data.price, 
-                change: sp500Data.change, 
-                changePercent: sp500Data.changePercent 
+            {
+                symbol: "^GSPC",
+                price: sp500Data.price,
+                change: sp500Data.change,
+                changePercent: sp500Data.changePercent
             },
-            { 
-                symbol: "USDKRW=X", 
-                price: usdkrwData.price, 
-                change: usdkrwData.change, 
-                changePercent: usdkrwData.changePercent 
+            {
+                symbol: "USDKRW=X",
+                price: usdkrwData.price,
+                change: usdkrwData.change,
+                changePercent: usdkrwData.changePercent
             }
         ];
     } catch (error) {
@@ -5322,17 +5559,17 @@ async function getAlphaVantageData(symbol: string, apiKey: string) {
                 'Accept': 'application/json'
             }
         });
-        
+
         if (response.ok) {
             const data = await response.json();
             console.log(`Alpha Vantage ${symbol} response:`, data);
-            
+
             if (data['Global Quote']) {
                 const quote = data['Global Quote'];
                 const price = parseFloat(quote['05. price'] || '0');
                 const change = parseFloat(quote['09. change'] || '0');
                 const changePercent = parseFloat(quote['10. change percent']?.replace('%', '') || '0');
-                
+
                 return {
                     price: parseFloat(price.toFixed(2)),
                     change: parseFloat(change.toFixed(2)),
@@ -5340,7 +5577,7 @@ async function getAlphaVantageData(symbol: string, apiKey: string) {
                 };
             }
         }
-        
+
         throw new Error(`Alpha Vantage API failed for ${symbol}`);
     } catch (error) {
         console.error(`Alpha Vantage ${symbol} error:`, error);
@@ -5357,24 +5594,24 @@ async function getAlphaVantageForex(from: string, to: string, apiKey: string) {
                 'Accept': 'application/json'
             }
         });
-        
+
         if (response.ok) {
             const data = await response.json();
             console.log(`Alpha Vantage Forex ${from}${to} response:`, data);
-            
+
             if (data['Time Series FX (Daily)']) {
                 const timeSeries = data['Time Series FX (Daily)'];
                 const dates = Object.keys(timeSeries).sort().reverse();
-                
+
                 if (dates.length > 1) {
                     const today = timeSeries[dates[0]];
                     const yesterday = timeSeries[dates[1]];
-                    
+
                     const price = parseFloat(today['4. close']);
                     const previousPrice = parseFloat(yesterday['4. close']);
                     const change = price - previousPrice;
                     const changePercent = (change / previousPrice) * 100;
-                    
+
                     return {
                         price: parseFloat(price.toFixed(2)),
                         change: parseFloat(change.toFixed(2)),
@@ -5383,7 +5620,7 @@ async function getAlphaVantageForex(from: string, to: string, apiKey: string) {
                 }
             }
         }
-        
+
         throw new Error(`Alpha Vantage Forex API failed for ${from}${to}`);
     } catch (error) {
         console.error(`Alpha Vantage Forex ${from}${to} error:`, error);
@@ -5394,24 +5631,24 @@ async function getAlphaVantageForex(from: string, to: string, apiKey: string) {
 // 100% 작동 보장 - 현실적인 실시간 시뮬레이션 데이터
 export async function getGlobalIndicesSimulation() {
     console.log("[Action] Getting REAL-TIME simulation data (100% guaranteed to work).");
-    
+
     try {
         const now = new Date();
         const timeOfDay = now.getHours() + now.getMinutes() / 60; // 0-24 시간
         const dayOfWeek = now.getDay(); // 0=일요일, 1=월요일, ...
         const timeStamp = Date.now();
-        
+
         // 시장 시간에 따른 변동성 조정
         const isMarketHours = (timeOfDay >= 9 && timeOfDay <= 15.5); // 장중 시간
         const volatilityMultiplier = isMarketHours ? 1.5 : 0.3; // 장중에는 더 큰 변동
-        
+
         // 각 지수별 현실적인 데이터 생성
         const kospiData = generateRealisticKospi(timeStamp, volatilityMultiplier);
         const nasdaqData = generateRealisticNasdaq(timeStamp, volatilityMultiplier);
         const sp500Data = generateRealisticSP500(timeStamp, volatilityMultiplier);
         const usdkrwData = generateRealisticUSDKRW(timeStamp, volatilityMultiplier);
 
-        console.log('Simulation Results (ULTRA REALISTIC):', { 
+        console.log('Simulation Results (ULTRA REALISTIC):', {
             kospiData, nasdaqData, sp500Data, usdkrwData,
             marketHours: isMarketHours,
             timeOfDay: timeOfDay.toFixed(2),
@@ -5419,29 +5656,29 @@ export async function getGlobalIndicesSimulation() {
         });
 
         return [
-            { 
-                symbol: "^KS11", 
-                price: kospiData.price, 
-                change: kospiData.change, 
-                changePercent: kospiData.changePercent 
+            {
+                symbol: "^KS11",
+                price: kospiData.price,
+                change: kospiData.change,
+                changePercent: kospiData.changePercent
             },
-            { 
-                symbol: "^IXIC", 
-                price: nasdaqData.price, 
-                change: nasdaqData.change, 
-                changePercent: nasdaqData.changePercent 
+            {
+                symbol: "^IXIC",
+                price: nasdaqData.price,
+                change: nasdaqData.change,
+                changePercent: nasdaqData.changePercent
             },
-            { 
-                symbol: "^GSPC", 
-                price: sp500Data.price, 
-                change: sp500Data.change, 
-                changePercent: sp500Data.changePercent 
+            {
+                symbol: "^GSPC",
+                price: sp500Data.price,
+                change: sp500Data.change,
+                changePercent: sp500Data.changePercent
             },
-            { 
-                symbol: "USDKRW=X", 
-                price: usdkrwData.price, 
-                change: usdkrwData.change, 
-                changePercent: usdkrwData.changePercent 
+            {
+                symbol: "USDKRW=X",
+                price: usdkrwData.price,
+                change: usdkrwData.change,
+                changePercent: usdkrwData.changePercent
             }
         ];
     } catch (error) {
@@ -5453,18 +5690,18 @@ export async function getGlobalIndicesSimulation() {
 // 코스피 현실적 시뮬레이션
 function generateRealisticKospi(timeStamp: number, volatility: number) {
     const basePrice = 2485.65;
-    
+
     // 여러 주기의 변동을 조합하여 매우 현실적인 움직임 생성
     const longTerm = Math.sin(timeStamp / 86400000) * 50; // 일일 추세
     const midTerm = Math.sin(timeStamp / 3600000) * 25 * volatility; // 시간별 변동
     const shortTerm = Math.sin(timeStamp / 300000) * 15 * volatility; // 5분 변동
     const microTrend = Math.sin(timeStamp / 60000) * 8 * volatility; // 1분 변동
     const noise = (Math.random() - 0.5) * 12 * volatility; // 랜덤 노이즈
-    
+
     const totalVariation = longTerm + midTerm + shortTerm + microTrend + noise;
     const price = basePrice + totalVariation;
     const change = totalVariation;
-    
+
     return {
         price: parseFloat(price.toFixed(2)),
         change: parseFloat(change.toFixed(2)),
@@ -5475,18 +5712,18 @@ function generateRealisticKospi(timeStamp: number, volatility: number) {
 // 나스닥 현실적 시뮬레이션
 function generateRealisticNasdaq(timeStamp: number, volatility: number) {
     const basePrice = 16926.58;
-    
+
     // 나스닥은 더 변동성이 큰 패턴
-    const longTerm = Math.sin(timeStamp / 86400000) * 400; 
+    const longTerm = Math.sin(timeStamp / 86400000) * 400;
     const midTerm = Math.sin(timeStamp / 3600000) * 250 * volatility;
     const shortTerm = Math.sin(timeStamp / 300000) * 150 * volatility;
     const microTrend = Math.sin(timeStamp / 60000) * 80 * volatility;
     const noise = (Math.random() - 0.5) * 120 * volatility;
-    
+
     const totalVariation = longTerm + midTerm + shortTerm + microTrend + noise;
     const price = basePrice + totalVariation;
     const change = totalVariation;
-    
+
     return {
         price: parseFloat(price.toFixed(2)),
         change: parseFloat(change.toFixed(2)),
@@ -5497,18 +5734,18 @@ function generateRealisticNasdaq(timeStamp: number, volatility: number) {
 // S&P 500 현실적 시뮬레이션
 function generateRealisticSP500(timeStamp: number, volatility: number) {
     const basePrice = 5447.87;
-    
+
     // S&P 500은 비교적 안정적인 패턴
-    const longTerm = Math.sin(timeStamp / 86400000) * 80; 
+    const longTerm = Math.sin(timeStamp / 86400000) * 80;
     const midTerm = Math.sin(timeStamp / 3600000) * 50 * volatility;
     const shortTerm = Math.sin(timeStamp / 300000) * 30 * volatility;
     const microTrend = Math.sin(timeStamp / 60000) * 20 * volatility;
     const noise = (Math.random() - 0.5) * 25 * volatility;
-    
+
     const totalVariation = longTerm + midTerm + shortTerm + microTrend + noise;
     const price = basePrice + totalVariation;
     const change = totalVariation;
-    
+
     return {
         price: parseFloat(price.toFixed(2)),
         change: parseFloat(change.toFixed(2)),
@@ -5519,18 +5756,18 @@ function generateRealisticSP500(timeStamp: number, volatility: number) {
 // USD/KRW 현실적 시뮬레이션
 function generateRealisticUSDKRW(timeStamp: number, volatility: number) {
     const basePrice = 1328.50;
-    
+
     // 환율은 상대적으로 안정적이지만 뉴스에 민감
-    const longTerm = Math.sin(timeStamp / 86400000) * 15; 
+    const longTerm = Math.sin(timeStamp / 86400000) * 15;
     const midTerm = Math.sin(timeStamp / 3600000) * 8 * volatility;
     const shortTerm = Math.sin(timeStamp / 300000) * 5 * volatility;
     const microTrend = Math.sin(timeStamp / 60000) * 3 * volatility;
     const noise = (Math.random() - 0.5) * 6 * volatility;
-    
+
     const totalVariation = longTerm + midTerm + shortTerm + microTrend + noise;
     const price = basePrice + totalVariation;
     const change = totalVariation;
-    
+
     return {
         price: parseFloat(price.toFixed(2)),
         change: parseFloat(change.toFixed(2)),
@@ -5541,7 +5778,7 @@ function generateRealisticUSDKRW(timeStamp: number, volatility: number) {
 // 기본 시뮬레이션 (초간단 버전)
 function getBasicSimulation() {
     const now = Date.now();
-    
+
     return [
         {
             symbol: "^KS11",
@@ -5550,7 +5787,7 @@ function getBasicSimulation() {
             changePercent: (Math.sin(now / 300000) * 20 / 2485.65 * 100)
         },
         {
-            symbol: "^IXIC", 
+            symbol: "^IXIC",
             price: 16926.58 + Math.sin(now / 240000) * 200,
             change: Math.sin(now / 240000) * 200,
             changePercent: (Math.sin(now / 240000) * 200 / 16926.58 * 100)
@@ -5578,19 +5815,19 @@ function getBasicSimulation() {
 // 🚀 한국투자증권 API로 주식 데이터 + 차트 데이터 가져오기
 export async function getKISStockData(ticker: string): Promise<{ stockData: StockData | null; chartData: ChartDataPoint[] }> {
     console.log(`[KIS API] Getting real-time stock data for ${ticker}`);
-    
+
     try {
         // 1. 토큰 발급
         const tokenData = await getKISAccessToken();
         if (!tokenData || !tokenData.access_token) {
             throw new Error('Failed to get KIS access token');
         }
-        
+
         const token = tokenData.access_token;
 
         // 2. 티커에 따라 국내/해외 구분
         const isKoreanStock = ticker.includes('.KS') || ticker.includes('.KQ') || /^\d{6}$/.test(ticker);
-        
+
         let stockData: StockData | null = null;
         let chartData: ChartDataPoint[] = [];
 
@@ -5601,10 +5838,10 @@ export async function getKISStockData(ticker: string): Promise<{ stockData: Stoc
                 fetchKISStockPrice(token, stockCode),
                 fetchKISKoreanChartData(token, stockCode)
             ]);
-            
+
             stockData = await formatKoreanStockData(ticker, currentData, dailyData);
             chartData = dailyData;
-            
+
         } else {
             // 해외 주식
             const exchange = getExchangeForSymbol(ticker);
@@ -5612,7 +5849,7 @@ export async function getKISStockData(ticker: string): Promise<{ stockData: Stoc
                 fetchKISOverseaPrice(token, ticker, exchange),
                 fetchKISOverseaChartData(token, ticker, exchange)
             ]);
-            
+
             stockData = await formatOverseaStockData(ticker, currentData, dailyData);
             chartData = dailyData;
         }
@@ -5656,7 +5893,7 @@ async function fetchKISKoreanChartData(token: string, stockCode: string): Promis
 
         if (data.rt_cd === '0' && data.output2) {
             return data.output2.map((item: any) => ({
-                date: `${item.stck_bsop_date.slice(0,4)}-${item.stck_bsop_date.slice(4,6)}-${item.stck_bsop_date.slice(6,8)}`,
+                date: `${item.stck_bsop_date.slice(0, 4)}-${item.stck_bsop_date.slice(4, 6)}-${item.stck_bsop_date.slice(6, 8)}`,
                 open: parseFloat(item.stck_oprc) || 0,
                 high: parseFloat(item.stck_hgpr) || 0,
                 low: parseFloat(item.stck_lwpr) || 0,
@@ -5703,7 +5940,7 @@ async function fetchKISOverseaChartData(token: string, symbol: string, exchange:
 
         if (data.rt_cd === '0' && data.output2) {
             return data.output2.map((item: any) => ({
-                date: `${item.xymd.slice(0,4)}-${item.xymd.slice(4,6)}-${item.xymd.slice(6,8)}`,
+                date: `${item.xymd.slice(0, 4)}-${item.xymd.slice(4, 6)}-${item.xymd.slice(6, 8)}`,
                 open: parseFloat(item.open) || 0,
                 high: parseFloat(item.high) || 0,
                 low: parseFloat(item.low) || 0,
@@ -5723,7 +5960,7 @@ async function fetchKISOverseaChartData(token: string, symbol: string, exchange:
 // 한국 주식 데이터 포맷팅
 async function formatKoreanStockData(ticker: string, currentData: any, chartData: ChartDataPoint[]): Promise<StockData> {
     const latestChart = chartData[chartData.length - 1];
-    
+
     return {
         ticker: ticker,
         name: getKoreanStockName(ticker),
@@ -5746,7 +5983,7 @@ async function formatKoreanStockData(ticker: string, currentData: any, chartData
 // 해외 주식 데이터 포맷팅
 async function formatOverseaStockData(ticker: string, currentData: any, chartData: ChartDataPoint[]): Promise<StockData> {
     const latestChart = chartData[chartData.length - 1];
-    
+
     return {
         ticker: ticker,
         name: getOverseaStockName(ticker),
@@ -5812,87 +6049,87 @@ function formatVolume(volume: number): string {
 // 🚀 Alpha Vantage API로 주식 데이터 가져오기
 async function getAlphaVantageStockData(ticker: string): Promise<{ stockData: StockData | null; chartData: ChartDataPoint[] }> {
     console.log(`[Alpha Vantage] Fetching data for ${ticker}`);
-    
+
     const API_KEY = process.env.NEXT_PUBLIC_ALPHA_VANTAGE_API_KEY || 'demo';
-    
+
     try {
         // 1. 현재가 정보 가져오기
         const quoteResponse = await fetch(
             `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${ticker}&apikey=${API_KEY}`
         );
         const quoteData = await quoteResponse.json();
-        
+
         // 2. 일일 차트 데이터 가져오기
         const chartResponse = await fetch(
             `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&apikey=${API_KEY}`
         );
         const chartData = await chartResponse.json();
-        
+
         // 3. 기업 정보 가져오기 (시가총액, P/E 등)
         const overviewResponse = await fetch(
             `https://www.alphavantage.co/query?function=OVERVIEW&symbol=${ticker}&apikey=${API_KEY}`
         );
         const overviewData = await overviewResponse.json();
-        
+
         console.log(`[Alpha Vantage] Quote data for ${ticker}:`, quoteData);
         console.log(`[Alpha Vantage] Chart data for ${ticker}:`, Object.keys(chartData));
         console.log(`[Alpha Vantage] Overview data for ${ticker}:`, overviewData);
-        
+
         // 현재가 데이터 파싱
         const quote = quoteData['Global Quote'];
         if (!quote) {
             console.warn(`[Alpha Vantage] No quote data for ${ticker}, using fallback`);
             return { stockData: null, chartData: [] };
         }
-        
+
         // 차트 데이터 파싱
         const timeSeries = chartData['Time Series (Daily)'];
         if (!timeSeries) {
             console.warn(`[Alpha Vantage] No chart data for ${ticker}, using fallback`);
             return { stockData: null, chartData: [] };
         }
-        
+
         // Overview 데이터에서 추가 정보 추출
         let additionalInfo: any = {};
         if (overviewData && !overviewData.Information && !overviewData.Note && !overviewData.Error) {
             additionalInfo = {
                 name: overviewData.Name || ticker,
                 exchange: overviewData.Exchange || 'N/A',
-                marketCap: overviewData.MarketCapitalization ? 
+                marketCap: overviewData.MarketCapitalization ?
                     formatMarketCap(parseFloat(overviewData.MarketCapitalization)) : 'N/A',
-                peRatio: overviewData.PERatio && overviewData.PERatio !== 'None' ? 
+                peRatio: overviewData.PERatio && overviewData.PERatio !== 'None' ?
                     parseFloat(overviewData.PERatio) : null,
-                dividendYield: overviewData.DividendYield && overviewData.DividendYield !== 'None' ? 
+                dividendYield: overviewData.DividendYield && overviewData.DividendYield !== 'None' ?
                     (parseFloat(overviewData.DividendYield) * 100) : null,
-                beta: overviewData.Beta && overviewData.Beta !== 'None' ? 
+                beta: overviewData.Beta && overviewData.Beta !== 'None' ?
                     parseFloat(overviewData.Beta) : null,
                 eps: overviewData.EPS || null,
                 bookValue: overviewData.BookValue || null,
-                roe: overviewData.ReturnOnEquityTTM && overviewData.ReturnOnEquityTTM !== 'None' ? 
+                roe: overviewData.ReturnOnEquityTTM && overviewData.ReturnOnEquityTTM !== 'None' ?
                     (parseFloat(overviewData.ReturnOnEquityTTM) * 100) : null,
-                profitMargin: overviewData.ProfitMargin && overviewData.ProfitMargin !== 'None' ? 
+                profitMargin: overviewData.ProfitMargin && overviewData.ProfitMargin !== 'None' ?
                     (parseFloat(overviewData.ProfitMargin) * 100) : null,
                 week52High: overviewData['52WeekHigh'] ? parseFloat(overviewData['52WeekHigh']) : null,
                 week52Low: overviewData['52WeekLow'] ? parseFloat(overviewData['52WeekLow']) : null
             };
             console.log(`[Alpha Vantage] Additional info extracted:`, additionalInfo);
         }
-        
+
         // 💡 개선된 등락률 계산 (Alpha Vantage)
         const currentPrice = parseFloat(quote['05. price']) || 0;
         const changeValue = parseFloat(quote['09. change']) || 0;
         const changePercentage = parseFloat(quote['10. change percent']?.replace('%', '')) || 0;
-        
+
         // 전일종가 계산
         const previousClose = currentPrice - changeValue;
-        
+
         console.log(`[Alpha Vantage] ${ticker} 원본 데이터:`, {
             currentPrice,
             changeValue,
             changePercentage,
             previousClose
         });
-        
+
         // 유틸리티 함수를 사용한 등락률 계산
         const dailyChange = calculateDailyChange({
             currentPrice,
@@ -5900,9 +6137,9 @@ async function getAlphaVantageStockData(ticker: string): Promise<{ stockData: St
             changeValue,
             changePercentage
         });
-        
+
         console.log(`[Alpha Vantage] ${ticker} 최종 등락률: ${dailyChange.value} (${dailyChange.percentage}%)`);
-        
+
         const finalChangeValue = dailyChange.value;
         const finalChangePercentage = dailyChange.percentage;
 
@@ -5924,7 +6161,7 @@ async function getAlphaVantageStockData(ticker: string): Promise<{ stockData: St
             dividendYield: additionalInfo.dividendYield,
             beta: additionalInfo.beta,
         };
-        
+
         // ChartData 생성 (5년치)
         const chartDataPoints: ChartDataPoint[] = Object.entries(timeSeries)
             .slice(0, 1825) // 최근 5년 (365 * 5 = 1825일)
@@ -5938,9 +6175,9 @@ async function getAlphaVantageStockData(ticker: string): Promise<{ stockData: St
                 volume: parseInt(data['5. volume']) || 0,
             }))
             .reverse(); // 날짜 순서로 정렬
-        
+
         return { stockData, chartData: chartDataPoints };
-        
+
     } catch (error) {
         console.error(`[Alpha Vantage] Error for ${ticker}:`, error);
         // 🛡️ 오류 시 null 반환으로 안전한 폴백 처리
@@ -5951,7 +6188,7 @@ async function getAlphaVantageStockData(ticker: string): Promise<{ stockData: St
 // 🚀 Yahoo Finance API로 주식 데이터 가져오기
 async function getYahooFinanceStockData(ticker: string): Promise<{ stockData: StockData | null; chartData: ChartDataPoint[] }> {
     console.log(`[Yahoo Finance] Fetching data for ${ticker}`);
-    
+
     try {
         // Yahoo Finance API 호출 (5년치 데이터)
         const response = await fetch(
@@ -5962,35 +6199,35 @@ async function getYahooFinanceStockData(ticker: string): Promise<{ stockData: St
                 }
             }
         );
-        
+
         if (!response.ok) {
             console.warn(`[Yahoo Finance] API failed for ${ticker}: ${response.status}`);
             return { stockData: null, chartData: [] };
         }
-        
+
         const data = await response.json();
         const result = data.chart?.result?.[0];
-        
+
         if (!result) {
             console.warn(`[Yahoo Finance] No data for ${ticker}, using fallback`);
             return { stockData: null, chartData: [] };
         }
-        
+
         const meta = result.meta;
         const timestamps = result.timestamp;
         const indicators = result.indicators.quote[0];
-        
+
         // 💡 개선된 등락률 계산 (Yahoo Finance)
         let currentPrice = meta.regularMarketPrice || meta.price || 0;
         const previousClose = meta.previousClose || meta.chartPreviousClose || 0;
-        
+
         // 현재가 검증 및 대체값 사용
         if (!isFinite(currentPrice) || currentPrice <= 0) {
             const fallbackPrice = indicators.close[indicators.close.length - 1];
             console.warn(`[Yahoo Finance] ${ticker} 현재가 이상: ${currentPrice}, 차트에서 대체: ${fallbackPrice}`);
             currentPrice = fallbackPrice || 0;
         }
-        
+
         // 전일종가가 없는 경우 차트 데이터에서 가져오기
         let validPreviousClose = previousClose;
         if (!isFinite(validPreviousClose) || validPreviousClose <= 0) {
@@ -5999,7 +6236,7 @@ async function getYahooFinanceStockData(ticker: string): Promise<{ stockData: St
                 console.warn(`[Yahoo Finance] ${ticker} 전일종가 없음, 차트에서 대체: ${validPreviousClose}`);
             }
         }
-        
+
         console.log(`[Yahoo Finance] ${ticker} 🔍 상세 원본 데이터:`, {
             currentPrice,
             previousClose: validPreviousClose,
@@ -6016,35 +6253,35 @@ async function getYahooFinanceStockData(ticker: string): Promise<{ stockData: St
             chartLength: indicators.close.length,
             lastTwoCloses: indicators.close.slice(-2)
         });
-        
+
         // 🔍 데이터 신뢰성 검증 및 개선
         let finalCurrentPrice = currentPrice;
         let finalPreviousClose = validPreviousClose;
-        
+
         // 차트 데이터에서 더 신뢰할 수 있는 값 추출
         if (indicators.close.length >= 2) {
             const chartCurrentPrice = indicators.close[indicators.close.length - 1];
             const chartPreviousClose = indicators.close[indicators.close.length - 2];
-            
+
             // 현재가 검증: 메타데이터와 차트데이터 비교
             if (chartCurrentPrice && Math.abs(currentPrice - chartCurrentPrice) / currentPrice > 0.01) {
                 console.warn(`[Yahoo Finance] ${ticker} 🚨 현재가 불일치: Meta=${currentPrice}, Chart=${chartCurrentPrice}, using Chart`);
                 finalCurrentPrice = chartCurrentPrice;
             }
-            
+
             // 전일종가 검증: 여러 소스 비교
             const sources = [
                 { name: 'validPreviousClose', value: validPreviousClose },
                 { name: 'chartPreviousClose', value: chartPreviousClose },
                 { name: 'chartPrevious', value: meta.chartPreviousClose }
             ].filter(s => s.value && isFinite(s.value) && s.value > 0);
-            
+
             if (sources.length > 1) {
                 // 여러 값이 크게 차이나는 경우 경고
                 const values = sources.map(s => s.value);
                 const maxDiff = Math.max(...values) - Math.min(...values);
                 const avgValue = values.reduce((a, b) => a + b) / values.length;
-                
+
                 if (maxDiff / avgValue > 0.05) { // 5% 이상 차이
                     console.warn(`[Yahoo Finance] ${ticker} 🚨 전일종가 소스별 차이:`, sources);
                     // 차트 데이터를 우선 사용
@@ -6055,18 +6292,18 @@ async function getYahooFinanceStockData(ticker: string): Promise<{ stockData: St
                 }
             }
         }
-        
+
         // 최종 등락률 계산 전 추가 검증
         const preliminaryChange = finalCurrentPrice - finalPreviousClose;
         const preliminaryPercentage = (preliminaryChange / finalPreviousClose) * 100;
-        
+
         console.log(`[Yahoo Finance] ${ticker} 📊 예비 계산:`, {
             finalCurrentPrice,
             finalPreviousClose,
             preliminaryChange,
             preliminaryPercentage: preliminaryPercentage.toFixed(2) + '%'
         });
-        
+
         // 유틸리티 함수를 사용한 등락률 계산
         const dailyChange = calculateDailyChange({
             currentPrice: finalCurrentPrice,
@@ -6074,7 +6311,7 @@ async function getYahooFinanceStockData(ticker: string): Promise<{ stockData: St
             changeValue: meta.regularMarketChange || meta.change,
             changePercentage: meta.regularMarketChangePercent || meta.changePercent
         });
-        
+
         console.log(`[Yahoo Finance] ${ticker} ✅ 최종 등락률 (검증 완료):`, {
             value: dailyChange.value,
             percentage: dailyChange.percentage + '%',
@@ -6084,7 +6321,7 @@ async function getYahooFinanceStockData(ticker: string): Promise<{ stockData: St
             },
             calculation: `(${finalCurrentPrice} - ${finalPreviousClose}) / ${finalPreviousClose} * 100 = ${dailyChange.percentage}%`
         });
-        
+
         const changeValue = dailyChange.value;
         const changePercentage = dailyChange.percentage;
 
@@ -6103,12 +6340,12 @@ async function getYahooFinanceStockData(ticker: string): Promise<{ stockData: St
             peRatio: meta.trailingPE || meta.forwardPE || meta.priceEarningsRatio || null,
             fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh || meta.regularMarketDayHigh || 0,
             fiftyTwoWeekLow: meta.fiftyTwoWeekLow || meta.regularMarketDayLow || 0,
-            dividendYield: meta.trailingAnnualDividendYield ? 
-                (meta.trailingAnnualDividendYield * 100) : 
+            dividendYield: meta.trailingAnnualDividendYield ?
+                (meta.trailingAnnualDividendYield * 100) :
                 (meta.dividendYield ? meta.dividendYield * 100 : null),
             beta: meta.beta || meta.beta1Year || null,
         };
-        
+
         // ChartData 생성
         const chartDataPoints: ChartDataPoint[] = timestamps.map((timestamp: number, i: number) => ({
             date: new Date(timestamp * 1000).toISOString().split('T')[0],
@@ -6118,10 +6355,10 @@ async function getYahooFinanceStockData(ticker: string): Promise<{ stockData: St
             close: indicators.close[i] || 0,
             range: [indicators.low[i] || 0, indicators.high[i] || 0] as [number, number],
             volume: indicators.volume[i] || 0,
-                 })).filter((d: any) => d.open !== null && d.high !== null && d.low !== null && d.close !== null);
-        
+        })).filter((d: any) => d.open !== null && d.high !== null && d.low !== null && d.close !== null);
+
         return { stockData, chartData: chartDataPoints };
-        
+
     } catch (error) {
         console.error(`[Yahoo Finance] Error for ${ticker}:`, error);
         // 🛡️ 오류 시 null 반환으로 안전한 폴백 처리
@@ -6132,25 +6369,25 @@ async function getYahooFinanceStockData(ticker: string): Promise<{ stockData: St
 // 🚀 Finnhub API로 주식 데이터 가져오기  
 async function getFinnhubStockData(ticker: string): Promise<{ stockData: StockData | null; chartData: ChartDataPoint[] }> {
     console.log(`[Finnhub] Fetching data for ${ticker}`);
-    
+
     try {
         // Finnhub는 무료 API로는 제한적이므로 간단히 구현
         const response = await fetch(
             `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=demo`
         );
-        
+
         if (!response.ok) {
             console.warn(`[Finnhub] API failed for ${ticker}: ${response.status}`);
             return { stockData: null, chartData: [] };
         }
-        
+
         const data = await response.json();
-        
+
         if (!data.c) { // current price
             console.warn(`[Finnhub] No data for ${ticker}, using fallback`);
             return { stockData: null, chartData: [] };
         }
-        
+
         // 기본적인 StockData 생성 (차트 데이터는 제한적)
         const stockData: StockData = {
             ticker: ticker,
@@ -6169,12 +6406,12 @@ async function getFinnhubStockData(ticker: string): Promise<{ stockData: StockDa
             dividendYield: null,
             beta: null,
         };
-        
+
         // 차트 데이터는 기본값으로 생성 (Finnhub 무료는 제한적)
         const chartDataPoints: ChartDataPoint[] = [];
-        
+
         return { stockData, chartData: chartDataPoints };
-        
+
     } catch (error) {
         console.error(`[Finnhub] Error for ${ticker}:`, error);
         // 🛡️ 오류 시 null 반환으로 안전한 폴백 처리
@@ -6185,42 +6422,42 @@ async function getFinnhubStockData(ticker: string): Promise<{ stockData: StockDa
 // 🚀 FMP API로 주식 데이터 가져오기
 async function getFMPStockData(ticker: string): Promise<{ stockData: StockData | null; chartData: ChartDataPoint[] }> {
     console.log(`[FMP] Fetching data for ${ticker}`);
-    
+
     try {
         // FMP 무료 API 사용
         const [quoteResponse, chartResponse] = await Promise.all([
             fetch(`https://financialmodelingprep.com/api/v3/quote/${ticker}?apikey=demo`),
             fetch(`https://financialmodelingprep.com/api/v3/historical-price-full/${ticker}?apikey=demo`)
         ]);
-        
+
         if (!quoteResponse.ok || !chartResponse.ok) {
             console.warn(`[FMP] API failed for ${ticker}`);
             return { stockData: null, chartData: [] };
         }
-        
+
         const quoteData = await quoteResponse.json();
         const chartData = await chartResponse.json();
-        
+
         if (!quoteData || quoteData.length === 0) {
             console.warn(`[FMP] No quote data for ${ticker}, using fallback`);
             return { stockData: null, chartData: [] };
         }
-        
+
         const quote = quoteData[0];
-        
+
         // 💡 개선된 등락률 계산 (FMP)
         const currentPrice = quote.price || 0;
         const changeValue = quote.change || 0;
         const changePercentage = quote.changesPercentage || 0;
         const previousClose = quote.previousClose || (currentPrice - changeValue);
-        
+
         console.log(`[FMP] ${ticker} 원본 데이터:`, {
             currentPrice,
             changeValue,
             changePercentage,
             previousClose
         });
-        
+
         // 유틸리티 함수를 사용한 등락률 계산
         const dailyChange = calculateDailyChange({
             currentPrice,
@@ -6228,12 +6465,12 @@ async function getFMPStockData(ticker: string): Promise<{ stockData: StockData |
             changeValue,
             changePercentage
         });
-        
+
         console.log(`[FMP] ${ticker} 최종 등락률: ${dailyChange.value} (${dailyChange.percentage}%)`);
-        
+
         const finalChangeValue = dailyChange.value;
         const finalChangePercentage = dailyChange.percentage;
-        
+
         // StockData 생성
         const stockData: StockData = {
             ticker: ticker,
@@ -6252,7 +6489,7 @@ async function getFMPStockData(ticker: string): Promise<{ stockData: StockData |
             dividendYield: null,
             beta: null,
         };
-        
+
         // ChartData 생성 (5년치)
         const historical = chartData.historical || [];
         const chartDataPoints: ChartDataPoint[] = historical
@@ -6267,9 +6504,9 @@ async function getFMPStockData(ticker: string): Promise<{ stockData: StockData |
                 volume: item.volume || 0,
             }))
             .reverse();
-        
+
         return { stockData, chartData: chartDataPoints };
-        
+
     } catch (error) {
         console.error(`[FMP] Error for ${ticker}:`, error);
         // 🛡️ 오류 시 null 반환으로 안전한 폴백 처리
@@ -6280,7 +6517,7 @@ async function getFMPStockData(ticker: string): Promise<{ stockData: StockData |
 // 시가총액 포맷팅 함수
 function formatMarketCap(marketCap: number | null | undefined): string {
     if (!marketCap) return 'N/A';
-    
+
     if (marketCap >= 1000000000000) {
         return `${(marketCap / 1000000000000).toFixed(2)}T`;
     } else if (marketCap >= 1000000000) {
@@ -6294,117 +6531,117 @@ function formatMarketCap(marketCap: number | null | undefined): string {
 // 🎯 스마트 검색어 변환 함수 (주식 코드 → 회사명)
 function convertToNewsQuery(query: string, language: string): string {
     const isKorean = language === 'kr';
-    
+
     // 한국 주식 코드 매핑 (확장)
     const koreanStocks: { [key: string]: { kr: string, en: string, keywords: { kr: string[], en: string[] } } } = {
-        '005930.KS': { 
-            kr: '삼성전자', 
+        '005930.KS': {
+            kr: '삼성전자',
             en: 'Samsung Electronics',
-            keywords: { 
+            keywords: {
                 kr: ['삼성전자', '삼성', '갤럭시', '반도체', '메모리'],
                 en: ['Samsung Electronics', 'Samsung', 'Galaxy', 'semiconductor', 'memory']
             }
         },
-        '005930': { 
-            kr: '삼성전자', 
+        '005930': {
+            kr: '삼성전자',
             en: 'Samsung Electronics',
-            keywords: { 
+            keywords: {
                 kr: ['삼성전자', '삼성', '갤럭시', '반도체'],
                 en: ['Samsung Electronics', 'Samsung', 'Galaxy', 'semiconductor']
             }
         },
-        '000660.KS': { 
-            kr: 'SK하이닉스', 
+        '000660.KS': {
+            kr: 'SK하이닉스',
             en: 'SK Hynix',
-            keywords: { 
+            keywords: {
                 kr: ['SK하이닉스', 'SK', '하이닉스', '메모리', 'D램'],
                 en: ['SK Hynix', 'SK', 'Hynix', 'memory', 'DRAM']
             }
         },
-        '000660': { 
-            kr: 'SK하이닉스', 
+        '000660': {
+            kr: 'SK하이닉스',
             en: 'SK Hynix',
-            keywords: { 
+            keywords: {
                 kr: ['SK하이닉스', 'SK', '하이닉스', 'D램'],
                 en: ['SK Hynix', 'SK', 'Hynix', 'DRAM']
             }
         },
-        '035420.KS': { 
-            kr: 'NAVER', 
+        '035420.KS': {
+            kr: 'NAVER',
             en: 'NAVER Corporation',
-            keywords: { 
+            keywords: {
                 kr: ['네이버', 'NAVER', '라인', '검색엔진'],
                 en: ['NAVER', 'Line', 'search engine', 'internet']
             }
         },
-        '035420': { 
-            kr: 'NAVER', 
+        '035420': {
+            kr: 'NAVER',
             en: 'NAVER Corporation',
-            keywords: { 
+            keywords: {
                 kr: ['네이버', 'NAVER', '라인'],
                 en: ['NAVER', 'Line', 'search']
             }
         }
     };
-    
+
     // 미국 주식 코드 매핑 (확장)
     const usStocks: { [key: string]: { name: string, keywords: string[] } } = {
-        'AAPL': { 
-            name: 'Apple Inc', 
+        'AAPL': {
+            name: 'Apple Inc',
             keywords: ['Apple', 'iPhone', 'Mac', 'iPad', 'Tim Cook', 'iOS']
         },
-        'GOOGL': { 
-            name: 'Alphabet Google', 
+        'GOOGL': {
+            name: 'Alphabet Google',
             keywords: ['Google', 'Alphabet', 'search', 'Android', 'YouTube', 'Sundar Pichai']
         },
-        'TSLA': { 
-            name: 'Tesla Motors', 
+        'TSLA': {
+            name: 'Tesla Motors',
             keywords: ['Tesla', 'Elon Musk', 'electric vehicle', 'EV', 'Model 3', 'Model Y']
         },
-        'MSFT': { 
-            name: 'Microsoft Corporation', 
+        'MSFT': {
+            name: 'Microsoft Corporation',
             keywords: ['Microsoft', 'Windows', 'Office', 'Azure', 'Satya Nadella']
         },
-        'AMZN': { 
-            name: 'Amazon.com', 
+        'AMZN': {
+            name: 'Amazon.com',
             keywords: ['Amazon', 'AWS', 'Jeff Bezos', 'e-commerce', 'Prime']
         },
-        'NVDA': { 
-            name: 'NVIDIA Corporation', 
+        'NVDA': {
+            name: 'NVIDIA Corporation',
             keywords: ['NVIDIA', 'GPU', 'AI', 'gaming', 'Jensen Huang', 'graphics']
         },
-        'META': { 
-            name: 'Meta Facebook', 
+        'META': {
+            name: 'Meta Facebook',
             keywords: ['Meta', 'Facebook', 'Instagram', 'WhatsApp', 'Mark Zuckerberg']
         },
-        'NFLX': { 
-            name: 'Netflix Inc', 
+        'NFLX': {
+            name: 'Netflix Inc',
             keywords: ['Netflix', 'streaming', 'video', 'subscription']
         },
-        'TSLL': { 
-            name: 'Tesla Motors', 
+        'TSLL': {
+            name: 'Tesla Motors',
             keywords: ['Tesla', 'Elon Musk', 'electric vehicle', 'EV']
         }
     };
-    
+
     // 시장 뉴스 키워드
     if (query.toLowerCase().includes('market')) {
         return isKorean ? '주식시장 경제 코스피 증시' : 'stock market economy finance business Wall Street';
     }
-    
+
     // 한국 주식 코드 변환
     const koreanStock = koreanStocks[query];
     if (koreanStock) {
         const keywords = isKorean ? koreanStock.keywords.kr : koreanStock.keywords.en;
         return keywords.join(' OR ');
     }
-    
+
     // 미국 주식 코드 변환
     const usStock = usStocks[query.toUpperCase()];
     if (usStock) {
         return usStock.keywords.join(' OR ');
     }
-    
+
     // 변환할 수 없는 경우 원래 쿼리 반환
     return query;
 }
@@ -6412,20 +6649,20 @@ function convertToNewsQuery(query: string, language: string): string {
 // 🛡️ NewsAPI (401 에러 처리 개선)
 async function getNewsAPIHeadlines(query: string, language: string): Promise<NewsArticle[]> {
     console.log(`[NewsAPI] Attempting to fetch headlines for "${query}"`);
-    
+
     try {
         const apiKey = process.env.NEXT_PUBLIC_NEWS_API_KEY || 'demo';
-        
+
         // API 키 유효성 검사
         if (!apiKey || apiKey === 'demo' || apiKey === 'your_api_key_here') {
             console.warn(`[NewsAPI] Invalid API key detected, skipping external call`);
             throw new Error('NewsAPI requires valid API key');
         }
-        
+
         const lang = language === 'kr' ? 'ko' : 'en';
-        
+
         console.log(`[NewsAPI] Making request with API key: ${apiKey.slice(0, 8)}...`);
-        
+
         const response = await fetch(
             `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&language=${lang}&sortBy=publishedAt&pageSize=10&apiKey=${apiKey}`,
             {
@@ -6435,7 +6672,7 @@ async function getNewsAPIHeadlines(query: string, language: string): Promise<New
                 }
             }
         );
-        
+
         if (!response.ok) {
             if (response.status === 401) {
                 console.error(`[NewsAPI] 401 Unauthorized - API key issue`);
@@ -6447,21 +6684,21 @@ async function getNewsAPIHeadlines(query: string, language: string): Promise<New
                 throw new Error(`NewsAPI HTTP ${response.status}: ${response.statusText}`);
             }
         }
-        
+
         const data = await response.json();
-        
+
         if (data.status === 'error') {
             console.error(`[NewsAPI] API returned error:`, data.message);
             throw new Error(`NewsAPI error: ${data.message}`);
         }
-        
+
         if (!data.articles || data.articles.length === 0) {
             console.warn(`[NewsAPI] No articles found for "${query}"`);
             throw new Error(`No articles from NewsAPI for "${query}"`);
         }
-        
+
         console.log(`[NewsAPI] ✅ Successfully fetched ${data.articles.length} articles`);
-        
+
         return data.articles.map((article: any) => ({
             title: article.title || 'No Title',
             url: article.url || '#',
@@ -6469,48 +6706,48 @@ async function getNewsAPIHeadlines(query: string, language: string): Promise<New
             source: article.source?.name || 'NewsAPI',
             summary: article.description || ''
         }));
-        
+
     } catch (error) {
         const errorMsg = error instanceof Error ? error.message : 'Unknown error';
         console.error(`[NewsAPI] ❌ Failed for "${query}": ${errorMsg}`);
-        
+
         // 401 에러 시 특별 처리
         if (errorMsg.includes('401') || errorMsg.includes('API key')) {
             console.log(`[NewsAPI] → API key issue detected, switching to alternative sources`);
         }
-        
+
         throw error;
     }
 }
 
 async function getAlphaVantageNews(query: string, language: string): Promise<NewsArticle[]> {
     console.log(`[Alpha Vantage News] Fetching news for "${query}"`);
-    
+
     try {
         const apiKey = process.env.NEXT_PUBLIC_ALPHA_VANTAGE_API_KEY || 'demo';
-        
+
         const response = await fetch(
             `https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=${query}&apikey=${apiKey}`
         );
-        
+
         if (!response.ok) {
             console.warn(`[Alpha Vantage News] HTTP ${response.status} for "${query}"`);
             return []; // 빈 배열 반환하여 다음 소스로 넘어가기
         }
-        
+
         const data = await response.json();
-        
+
         // API 한계 또는 에러 응답 체크
         if (data.Note || data.Information) {
             console.warn(`[Alpha Vantage News] API limit or info: ${data.Note || data.Information}`);
             return []; // 빈 배열 반환
         }
-        
+
         if (!data.feed || !Array.isArray(data.feed) || data.feed.length === 0) {
             console.warn(`[Alpha Vantage News] No news data for "${query}"`);
             return []; // 에러 대신 빈 배열 반환
         }
-        
+
         return data.feed.slice(0, 20).map((article: any) => ({
             title: article.title || 'No Title',
             url: article.url || '#',
@@ -6518,7 +6755,7 @@ async function getAlphaVantageNews(query: string, language: string): Promise<New
             source: article.source || 'Alpha Vantage',
             summary: article.summary || ''
         }));
-        
+
     } catch (error) {
         console.warn(`[Alpha Vantage News] Error for "${query}":`, error);
         return []; // 에러 시에도 빈 배열 반환하여 다음 소스로 넘어가기
@@ -6527,12 +6764,12 @@ async function getAlphaVantageNews(query: string, language: string): Promise<New
 
 async function getYahooFinanceNews(query: string, language: string): Promise<NewsArticle[]> {
     console.log(`[Yahoo Finance News] Fetching news for "${query}"`);
-    
+
     try {
         // Yahoo Finance RSS 피드 활용
         const searchQuery = encodeURIComponent(query);
         const rssUrl = `https://feeds.finance.yahoo.com/rss/2.0/headline?s=${searchQuery}&region=US&lang=en-US`;
-        
+
         const response = await fetch(rssUrl, {
             method: 'GET',
             headers: {
@@ -6541,30 +6778,30 @@ async function getYahooFinanceNews(query: string, language: string): Promise<New
             },
             signal: AbortSignal.timeout(4000)
         });
-        
+
         if (!response.ok) {
             throw new Error(`Yahoo Finance RSS failed: ${response.status}`);
         }
-        
+
         const xmlText = await response.text();
         const items = xmlText.match(/<item[^>]*>[\s\S]*?<\/item>/g) || [];
         const articles: NewsArticle[] = [];
-        
+
         for (let i = 0; i < Math.min(items.length, 5); i++) {
             const item = items[i];
-            
-            const titleMatch = item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/) || 
-                             item.match(/<title>(.*?)<\/title>/);
-            const linkMatch = item.match(/<link><!\[CDATA\[(.*?)\]\]><\/link>/) || 
-                            item.match(/<link>(.*?)<\/link>/);
-            const descMatch = item.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/) || 
-                            item.match(/<description>(.*?)<\/description>/);
-            
+
+            const titleMatch = item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/) ||
+                item.match(/<title>(.*?)<\/title>/);
+            const linkMatch = item.match(/<link><!\[CDATA\[(.*?)\]\]><\/link>/) ||
+                item.match(/<link>(.*?)<\/link>/);
+            const descMatch = item.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/) ||
+                item.match(/<description>(.*?)<\/description>/);
+
             if (titleMatch && linkMatch) {
                 const title = titleMatch[1];
                 const url = linkMatch[1];
                 const description = descMatch ? descMatch[1].replace(/<[^>]*>/g, '').substring(0, 200) : title;
-                
+
                 articles.push({
                     title: title,
                     url: url,
@@ -6577,13 +6814,13 @@ async function getYahooFinanceNews(query: string, language: string): Promise<New
                 });
             }
         }
-        
+
         console.log(`[Yahoo Finance News] ✅ Extracted ${articles.length} articles for "${query}"`);
         return articles;
-        
+
     } catch (error) {
         console.warn(`[Yahoo Finance News] Error for "${query}":`, error);
-        
+
         // 폴백: 기본 뉴스 생성
         return [{
             title: `${query} - 최신 금융 뉴스`,
@@ -6600,7 +6837,7 @@ async function getYahooFinanceNews(query: string, language: string): Promise<New
 
 async function getPublicNewsAPI(query: string, language: string): Promise<NewsArticle[]> {
     console.log(`[Public News API] Fetching news for "${query}"`);
-    
+
     try {
         // NewsData.io 무료 API 사용 (demo 키 사용)
         const response = await fetch(
@@ -6612,19 +6849,19 @@ async function getPublicNewsAPI(query: string, language: string): Promise<NewsAr
                 signal: AbortSignal.timeout(3000)
             }
         );
-        
+
         if (!response.ok) {
             console.warn(`[Public News API] HTTP ${response.status} for "${query}"`);
             throw new Error(`HTTP ${response.status}`);
         }
-        
+
         const data = await response.json();
-        
+
         if (!data.results || data.results.length === 0) {
             console.warn(`[Public News API] No news data for "${query}"`);
             throw new Error('No results');
         }
-        
+
         const articles = data.results.slice(0, 5).map((article: any) => ({
             title: article.title || 'No Title',
             url: article.link || '#',
@@ -6635,13 +6872,13 @@ async function getPublicNewsAPI(query: string, language: string): Promise<NewsAr
             category: 'business',
             isGeminiGenerated: false
         }));
-        
+
         console.log(`[Public News API] ✅ Got ${articles.length} articles for "${query}"`);
         return articles;
-        
+
     } catch (error) {
         console.warn(`[Public News API] Error for "${query}":`, error);
-        
+
         // 폴백: 기본 비즈니스 뉴스 생성
         return [{
             title: `${query} 관련 비즈니스 뉴스`,
@@ -6659,15 +6896,15 @@ async function getPublicNewsAPI(query: string, language: string): Promise<NewsAr
 // 🛡️ 심플 RSS 뉴스 피드 (Guardian 대신 안정적인 무료 뉴스)
 async function getSimpleRSSNews(query: string, language: string): Promise<NewsArticle[]> {
     console.log(`[Simple RSS] Fetching news for "${query}"`);
-    
+
     try {
         // BBC RSS 피드 사용 (Guardian 대신)
-        const rssUrl = language === 'kr' 
+        const rssUrl = language === 'kr'
             ? 'https://feeds.bbci.co.uk/news/business/rss.xml'
             : 'https://feeds.bbci.co.uk/news/business/rss.xml';
-        
+
         console.log(`[Simple RSS] Using BBC RSS feed: ${rssUrl}`);
-        
+
         const response = await fetch(rssUrl, {
             method: 'GET',
             headers: {
@@ -6676,37 +6913,37 @@ async function getSimpleRSSNews(query: string, language: string): Promise<NewsAr
             },
             signal: AbortSignal.timeout(5000)
         });
-        
+
         if (!response.ok) {
             throw new Error(`RSS fetch failed: ${response.status}`);
         }
-        
+
         const xmlText = await response.text();
         console.log(`[Simple RSS] ✅ Got RSS data (${xmlText.length} chars)`);
-        
+
         // 간단한 XML 파싱으로 제목과 링크 추출
         const items = xmlText.match(/<item[^>]*>[\s\S]*?<\/item>/g) || [];
         const articles: NewsArticle[] = [];
-        
+
         for (let i = 0; i < Math.min(items.length, 3); i++) {
             const item = items[i];
-            
+
             const titleMatch = item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/);
             const linkMatch = item.match(/<link><!\[CDATA\[(.*?)\]\]><\/link>/);
             const descMatch = item.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/);
-            
+
             if (titleMatch && linkMatch) {
                 const title = titleMatch[1];
                 const url = linkMatch[1];
                 const description = descMatch ? descMatch[1].substring(0, 200) : title;
-                
+
                 // 검색 쿼리와 관련성이 있는지 간단히 체크
                 const relevantKeywords = query.split(' ').slice(0, 3);
-                const isRelevant = relevantKeywords.some(keyword => 
+                const isRelevant = relevantKeywords.some(keyword =>
                     title.toLowerCase().includes(keyword.toLowerCase()) ||
                     description.toLowerCase().includes(keyword.toLowerCase())
                 );
-                
+
                 if (isRelevant || i < 2) { // 처음 2개는 항상 포함, 나머지는 관련성 체크
                     articles.push({
                         title: title,
@@ -6721,10 +6958,10 @@ async function getSimpleRSSNews(query: string, language: string): Promise<NewsAr
                 }
             }
         }
-        
+
         console.log(`[Simple RSS] ✅ Extracted ${articles.length} relevant articles`);
         return articles;
-        
+
     } catch (error) {
         console.error(`[Simple RSS] Error for "${query}":`, error);
         return [];
@@ -6748,7 +6985,7 @@ let lastUpdateAttempt: number = 0; // 마지막 업데이트 시도 시간
 function getNextBusinessDate(currentDate: Date): Date {
     const nextDate = new Date(currentDate);
     nextDate.setDate(currentDate.getDate() + 1);
-    
+
     // 토요일(6) 또는 일요일(0)이면 월요일로 건너뛰기
     const dayOfWeek = nextDate.getDay();
     if (dayOfWeek === 6) { // 토요일
@@ -6756,7 +6993,7 @@ function getNextBusinessDate(currentDate: Date): Date {
     } else if (dayOfWeek === 0) { // 일요일
         nextDate.setDate(nextDate.getDate() + 1); // 월요일로
     }
-    
+
     return nextDate;
 }
 
@@ -6765,55 +7002,75 @@ function isBusinessDay(date: Date): boolean {
     return dayOfWeek !== 0 && dayOfWeek !== 6; // 일요일(0)과 토요일(6) 제외
 }
 
-// 🗓️ 최신 GitBook 날짜 동적 찾기 함수 (개선된 버전)
+// 🗓️ 최신 GitBook 날짜 동적 찾기 함수 (마크다운 우선 버전)
 async function findLatestGitBookDate(): Promise<string> {
-    console.log('[GitBook] 🚀 스마트 최신 날짜 자동 검색 시작...');
-    
+    console.log('[GitBook] 🚀 스마트 최신 날짜 자동 검색 시작 (마크다운 우선)...');
+
     const today = new Date();
     let checkDate = new Date(today);
-    
+
     // 현재 날짜부터 시작해서 최대 10일 전까지 체크 (주말 건너뛰면서)
     for (let i = 0; i <= 10; i++) {
         const dateString = checkDate.toISOString().split('T')[0]; // YYYY-MM-DD 형식
-        
+
         // 주말인지 확인 (토요일=6, 일요일=0)
         if (!isBusinessDay(checkDate)) {
             console.log(`[GitBook] ⏭️ 주말 건너뛰기: ${dateString}`);
             checkDate.setDate(checkDate.getDate() - 1);
             continue;
         }
-        
-        const testUrl = `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/bloomberg`;
+
+        // 마크다운 URL 우선 시도
+        const markdownUrl = `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/bloomberg.md`;
+        const fallbackUrl = `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/bloomberg`;
+
         console.log(`[GitBook] 📅 평일 날짜 확인 중: ${dateString}`);
-        
+        console.log(`[GitBook] 🎯 마크다운 URL 우선 시도: ${markdownUrl}`);
+
         try {
-            // HEAD 요청으로 빠르게 페이지 존재 여부 확인
-            const response = await fetch(testUrl, { 
+            // 1. 마크다운 URL 먼저 시도
+            const markdownResponse = await fetch(markdownUrl, {
                 method: 'HEAD',
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
                 signal: AbortSignal.timeout(3000) // 3초 타임아웃
             });
-            
-            if (response.ok) {
-                console.log(`[GitBook] ✅ 최신 평일 날짜 발견: ${dateString}`);
+
+            if (markdownResponse.ok) {
+                console.log(`[GitBook] ✅ 최신 평일 날짜 발견 (마크다운): ${dateString}`);
                 return dateString;
             }
+
+            // 2. 마크다운 실패시 HTML 폴백
+            console.log(`[GitBook] 🔄 마크다운 실패, HTML 폴백 시도: ${fallbackUrl}`);
+            const htmlResponse = await fetch(fallbackUrl, {
+                method: 'HEAD',
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                signal: AbortSignal.timeout(3000)
+            });
+
+            if (htmlResponse.ok) {
+                console.log(`[GitBook] ✅ 최신 평일 날짜 발견 (HTML 폴백): ${dateString}`);
+                return dateString;
+            }
+
         } catch (error) {
             console.log(`[GitBook] ❌ ${dateString} 페이지 없음 또는 접근 불가`);
         }
-        
+
         // 하루씩 뒤로 이동
         checkDate.setDate(checkDate.getDate() - 1);
     }
-    
+
     // 폴백: 가장 최근 평일 날짜 사용
     let fallbackDate = new Date(today);
     while (!isBusinessDay(fallbackDate)) {
         fallbackDate.setDate(fallbackDate.getDate() - 1);
     }
-    
+
     const fallbackDateString = fallbackDate.toISOString().split('T')[0];
     console.log(`[GitBook] ⚠️ 폴백 평일 날짜 사용: ${fallbackDateString}`);
     return fallbackDateString;
@@ -6822,7 +7079,7 @@ async function findLatestGitBookDate(): Promise<string> {
 // 🔄 완벽한 동적 날짜 업데이트 체크 함수 (사용자 요구사항 100% 반영)
 async function checkForNextDayNews(): Promise<{ hasNew: boolean; newDate?: string }> {
     console.log('[GitBook] 🚀 동적 다음날 뉴스 체크 시작...');
-    
+
     try {
         // 1. 현재 사용 중인 날짜 확인 (없으면 최신 날짜 찾기)
         if (!currentActiveDate) {
@@ -6831,40 +7088,40 @@ async function checkForNextDayNews(): Promise<{ hasNew: boolean; newDate?: strin
             lastSuccessfulDate = currentActiveDate;
             console.log(`[GitBook] ✅ 초기 날짜 설정: ${currentActiveDate}`);
         }
-        
+
         // 2. 현재 날짜에서 정확히 하루 다음 날짜 계산 (평일 계산 아님)
         const currentDate = new Date(currentActiveDate + 'T12:00:00.000Z');
         const nextDay = new Date(currentDate);
         nextDay.setDate(currentDate.getDate() + 1);
         const nextDateString = nextDay.toISOString().split('T')[0];
-        
+
         console.log(`[GitBook] 📅 현재 날짜: ${currentActiveDate} → 다음 날짜: ${nextDateString}`);
-        
+
         // 3. 다음날 뉴스 링크 존재 여부 확인 (여러 패턴 테스트)
         const testUrls = [
             `https://futuresnow.gitbook.io/newstoday/${nextDateString}/news/today/bloomberg`,
             `https://futuresnow.gitbook.io/newstoday/${nextDateString}/greeting/preview`,
             `https://futuresnow.gitbook.io/newstoday/${nextDateString}`
         ];
-        
+
         console.log(`[GitBook] 🔍 다음날 링크들 테스트: ${nextDateString}`);
-        
+
         let linkWorks = false;
         let workingUrl = '';
-        
+
         // 모든 링크 패턴을 순차적으로 테스트
         for (const testUrl of testUrls) {
             try {
                 console.log(`[GitBook] 🔍 테스트 중: ${testUrl}`);
-                
-                const response = await fetch(testUrl, { 
+
+                const response = await fetch(testUrl, {
                     method: 'HEAD',
                     headers: {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                     },
                     signal: AbortSignal.timeout(8000) // 8초 타임아웃
                 });
-                
+
                 if (response.ok) {
                     console.log(`[GitBook] ✅ 링크 작동 확인: ${testUrl} (상태: ${response.status})`);
                     linkWorks = true;
@@ -6873,42 +7130,42 @@ async function checkForNextDayNews(): Promise<{ hasNew: boolean; newDate?: strin
                 } else {
                     console.log(`[GitBook] ❌ 링크 작동 안함: ${testUrl} (상태: ${response.status})`);
                 }
-                         } catch (error) {
-                 console.log(`[GitBook] ❌ 링크 테스트 실패: ${testUrl} - ${error instanceof Error ? error.message : String(error)}`);
-             }
+            } catch (error) {
+                console.log(`[GitBook] ❌ 링크 테스트 실패: ${testUrl} - ${error instanceof Error ? error.message : String(error)}`);
+            }
         }
-        
+
         if (linkWorks) {
             console.log(`[GitBook] 🎉 새로운 뉴스 발견! ${nextDateString} - 작동하는 링크: ${workingUrl}`);
-            
+
             // 4. 성공: 다음날 날짜로 업데이트
             lastSuccessfulDate = currentActiveDate; // 롤백용 백업
             currentActiveDate = nextDateString; // 새 날짜로 업데이트
             lastUpdateAttempt = Date.now();
-            
+
             console.log(`[GitBook] 📈 날짜 업데이트 완료: ${lastSuccessfulDate} → ${currentActiveDate}`);
-            
+
             // 즉시 새로운 뉴스 크롤링 시도
             try {
                 console.log(`[GitBook] 🔄 새로운 날짜로 뉴스 크롤링 시도...`);
                 const newNews = await getGitBookLatestNews('kr');
-                if (newNews && newNews.length > 0) {
-                    console.log(`[GitBook] ✅ 새로운 뉴스 ${newNews.length}개 크롤링 성공!`);
+                if (newNews && newNews.marketNews.length > 0) {
+                    console.log(`[GitBook] ✅ 새로운 뉴스 ${newNews.marketNews.length}개 크롤링 성공!`);
                 }
             } catch (newsError) {
                 console.error(`[GitBook] ⚠️ 새로운 뉴스 크롤링 실패, 하지만 날짜는 업데이트됨:`, newsError);
             }
-            
+
             return { hasNew: true, newDate: nextDateString };
         } else {
             console.log(`[GitBook] ⏭️ 다음날 뉴스 아직 없음 (${nextDateString}), 현재 날짜 유지: ${currentActiveDate}`);
             console.log(`[GitBook] 📋 현재 작동하는 마지막 날짜: ${lastSuccessfulDate || currentActiveDate}`);
             return { hasNew: false };
         }
-        
+
     } catch (error) {
         console.error('[GitBook] 다음날 뉴스 체크 중 전체적인 실패:', error);
-        
+
         // 5. 실패: 현재 날짜 유지 (롤백 불필요, 변경하지 않았으므로)
         if (currentActiveDate) {
             console.log(`[GitBook] 🔄 에러 발생, 현재 날짜 유지: ${currentActiveDate}`);
@@ -6924,7 +7181,7 @@ async function checkForNextDayNews(): Promise<{ hasNew: boolean; newDate?: strin
                 return { hasNew: false };
             }
         }
-        
+
         return { hasNew: false };
     }
 }
@@ -6932,11 +7189,11 @@ async function checkForNextDayNews(): Promise<{ hasNew: boolean; newDate?: strin
 // 📅 다음날 주요 일정 추출 함수 (개선된 버전)
 function extractUpcomingSchedule(htmlContent: string): { schedule: string[], title: string } {
     console.log('[GitBook] 🎯 주요 일정 추출 시작...');
-    
+
     try {
         // HTML에서 텍스트만 추출
         const textContent = htmlContent.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
-        
+
         // "📌2025년 7월 1주 차 주요 일정" 이후 내용 찾기
         const schedulePatterns = [
             /📌[\s\S]*?주요[\s\S]*?일정([\s\S]*?)(?:Last updated|Previous|Next|$)/i,
@@ -6944,9 +7201,9 @@ function extractUpcomingSchedule(htmlContent: string): { schedule: string[], tit
             /주요[\s\S]*?일정[\s\S]*?\n([\s\S]*?)(?:Last updated|Previous|Next|$)/i,
             /경제지표([\s\S]*?)독립기념일([\s\S]*?)$/i
         ];
-        
+
         let scheduleSection = '';
-        
+
         for (const pattern of schedulePatterns) {
             const match = textContent.match(pattern);
             if (match && match[1]) {
@@ -6955,16 +7212,16 @@ function extractUpcomingSchedule(htmlContent: string): { schedule: string[], tit
                 break;
             }
         }
-        
+
         const scheduleItems: string[] = [];
-        
+
         if (scheduleSection) {
-                         // 섹션별로 분리 (경제지표, 연준, 실적발표, 기타)
-             const lines = scheduleSection
-                 .split(/[\n•◦▪▫‣⁃*-]/)
-                 .map(line => line.trim())
-                 .filter(line => line.length > 3);
-            
+            // 섹션별로 분리 (경제지표, 연준, 실적발표, 기타)
+            const lines = scheduleSection
+                .split(/[\n•◦▪▫‣⁃*-]/)
+                .map(line => line.trim())
+                .filter(line => line.length > 3);
+
             for (const line of lines) {
                 // 카테고리별 정리
                 if (line.includes('경제지표') || line.includes('Economic')) {
@@ -6985,7 +7242,7 @@ function extractUpcomingSchedule(htmlContent: string): { schedule: string[], tit
                 }
             }
         }
-        
+
         // 폴백: 웹사이트에서 확인된 실제 일정 추가
         if (scheduleItems.length === 0) {
             scheduleItems.push(
@@ -6997,23 +7254,23 @@ function extractUpcomingSchedule(htmlContent: string): { schedule: string[], tit
             );
             console.log('[GitBook] 📋 실제 웹사이트 기반 폴백 일정 사용');
         }
-        
+
         console.log(`[GitBook] ✅ 주요 일정 ${scheduleItems.length}개 추출 완료`);
-        
-        return { 
+
+        return {
             schedule: scheduleItems.slice(0, 8), // 최대 8개로 제한
-            title: '📅 주요 일정' 
+            title: '📅 주요 일정'
         };
-        
+
     } catch (error) {
         console.error('[GitBook] 일정 추출 중 오류:', error);
-        return { 
+        return {
             schedule: [
                 "📊 경제지표: 비농업 취업자수, 실업률, PMI 등",
                 "🏦 연준: 파월 의장 등 주요 인사 발언",
                 "📈 실적발표: 주요 기업 실적 발표 예정"
-            ], 
-            title: "📅 주요 일정" 
+            ],
+            title: "📅 주요 일정"
         };
     }
 }
@@ -7021,19 +7278,19 @@ function extractUpcomingSchedule(htmlContent: string): { schedule: string[], tit
 // 💬 월가의 말말말 추출 함수
 function extractWallStreetComments(htmlContent: string): { comments: string[], title: string } {
     console.log('[GitBook] 💬 월가의 말말말 추출 시작...');
-    
+
     try {
         // HTML에서 텍스트만 추출
         const textContent = htmlContent.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
-        
+
         // "월가의 말말말" 섹션 찾기
         const commentPatterns = [
             /월가의\s*말말말([\s\S]*?)(?:파월|유가|암호화폐|개별\s*기업|📌|$)/i,
             /Wall\s*Street[\s\S]*?Commentary([\s\S]*?)(?:Powell|Oil|Crypto|Individual|📌|$)/i
         ];
-        
+
         let commentSection = '';
-        
+
         for (const pattern of commentPatterns) {
             const match = textContent.match(pattern);
             if (match && match[1]) {
@@ -7042,13 +7299,13 @@ function extractWallStreetComments(htmlContent: string): { comments: string[], t
                 break;
             }
         }
-        
-    const comments: string[] = [];
-        
+
+        const comments: string[] = [];
+
         if (commentSection) {
             // 문장 단위로 분리하고 의미있는 내용만 추출
             const sentences = commentSection
-                .split(/[.!?]|\n/)
+                .split(/[.!?\n]/)
                 .map(sentence => sentence.trim())
                 .filter(sentence => {
                     // 길이 조건과 월가 관련 키워드 포함 여부 확인
@@ -7059,37 +7316,37 @@ function extractWallStreetComments(htmlContent: string): { comments: string[], t
                         '상승', '하락', '랠리', 'rally', '조정', 'correction',
                         '목표주가', 'target price', '추천', 'recommend'
                     ].some(keyword => sentence.toLowerCase().includes(keyword.toLowerCase()));
-                    
+
                     return sentence.length > 20 && sentence.length < 200 && hasWallStreetKeywords;
                 });
-            
+
             // 중복 제거하고 최대 5개로 제한
             const uniqueComments = Array.from(new Set(sentences));
             comments.push(...uniqueComments.slice(0, 5));
         }
-        
-        // 폴백: 웹사이트에서 확인된 실제 월가 코멘트 추가
-    if (comments.length === 0) {
+
+        // 폴백: 일반적인 월가 관련 정보 제공
+        if (comments.length === 0) {
             comments.push(
-            "🏦 모건스탠리: 연준 금리 인하가 미국 증시 상승 이끌 것",
-            "💰 골드만삭스: 미국 연기금, 주가 급등 후 280억 달러 매도 전망",
-            "📈 월가 애널리스트들: S&P 500 급등세에 FOMO 콜옵션 매수 열풍 주목"
+                "💼 월가 전반적으로 시장 전망에 대해 신중한 낙관론을 유지하고 있음",
+                "📊 주요 투자은행들이 2025년 시장 전망 보고서를 발표할 예정",
+                "🔍 월가 애널리스트들의 상세한 의견은 개별 리포트를 참조하시기 바랍니다"
             );
-            console.log('[GitBook] 📝 실제 웹사이트 기반 폴백 월가 코멘트 사용');
+            console.log('[GitBook] 📝 일반적인 월가 관련 폴백 코멘트 사용');
         }
-        
+
         console.log(`[GitBook] ✅ 월가의 말말말 ${comments.length}개 추출 완료`);
-        
-        return { 
-            comments, 
-            title: '💬 월가의 말말말' 
+
+        return {
+            comments,
+            title: ' 월가의 말말말'
         };
-        
+
     } catch (error) {
         console.error('[GitBook] 월가의 말말말 추출 중 오류:', error);
-        return { 
-            comments: ["월가의 말말말 정보를 가져올 수 없습니다"], 
-            title: "💬 월가의 말말말" 
+        return {
+            comments: ["월가의 말말말 정보를 가져올 수 없습니다"],
+            title: " 월가의 말말말"
         };
     }
 }
@@ -7097,7 +7354,7 @@ function extractWallStreetComments(htmlContent: string): { comments: string[], t
 // 📰 세부 뉴스 내용 추출 함수
 function extractDetailedNewsContent(htmlContent: string): { articles: any[], title: string } {
     console.log('[GitBook] 📰 세부 뉴스 내용 추출 시작...');
-    
+
     try {
         // HTML에서 텍스트만 추출하되 더 정교하게 + GitBook 메타데이터 제거
         const textContent = htmlContent
@@ -7116,106 +7373,114 @@ function extractDetailedNewsContent(htmlContent: string): { articles: any[], tit
             .replace(/Edit\s+on\s+GitHub/gi, ' ') // Edit on GitHub 제거
             .replace(/Share\s+link/gi, ' ') // Share link 제거
             .replace(/Copy\s+link/gi, ' ') // Copy link 제거
+            // 🔥 "(원문)" 텍스트 필터링 추가
+            .replace(/\s*\(원문\)\s*/g, ' ') // (원문) 제거
+            .replace(/\s*원문\s*/g, ' ') // 원문 제거
             .replace(/\s+/g, ' ') // 여러 공백을 하나로
             .trim();
-        
-    const articles: any[] = [];
-        
+
+        const articles: any[] = [];
+
         console.log(`[GitBook] 📊 텍스트 길이: ${textContent.length}자`);
-        
-        // 🔍 Turbopack 안전한 단순 뉴스 추출 방식
-        const lines = textContent.split('\n');
-        const sentences = textContent.split(/[.!?\n]/);
-        
-        // 원문 패턴 찾기 (가장 안전한 방법)
-        const candidates = [];
-        
-        // 1. 원문 표시가 있는 항목 우선 추출
-        for (const line of lines) {
-            if (line.includes('원문') && line.length > 8 && line.length < 200) {
-                candidates.push(line.trim());
-            }
-        }
-        
-        // 2. 일반 문장에서 뉴스 후보 추출
-        for (const sentence of sentences) {
-            const trimmed = sentence.trim();
-            if (trimmed.length > 15 && trimmed.length < 150 && 
-                !trimmed.includes('http') && 
-                !trimmed.includes('GitBook') &&
-                !trimmed.includes('Navigation') &&
-                (trimmed.includes('미국') || trimmed.includes('중국') || trimmed.includes('일본') ||
-                 trimmed.includes('트럼프') || trimmed.includes('연준') || trimmed.includes('Fed') ||
-                 trimmed.includes('달러') || trimmed.includes('인플레이션') || trimmed.includes('금리') ||
-                 trimmed.includes('주식') || trimmed.includes('증시') || trimmed.includes('시장'))) {
-                candidates.push(trimmed);
-            }
-        }
-        
-        console.log(`[GitBook] 🔍 뉴스 후보 ${candidates.length}개 발견`);
-        
-        let totalMatches = candidates.length;
-        
-        for (const candidate of candidates) {
-            let title = candidate
-                // 괄호 제거
-                .replace(/\([^)]*원문[^)]*\)/g, '')
-                .replace(/\([^)]*\)/g, '')
-                .replace(/[\[\]]/g, '')
-                
-                // GitBook 메타데이터 제거
-                .replace(/Powered\s+by\s+GitBook/gi, '')
-                .replace(/On\s+this\s+page/gi, '')
-                .replace(/Table\s+of\s+contents/gi, '')
-                .replace(/Navigation\s+menu/gi, '')
-                .replace(/Sidebar\s+toggle/gi, '')
-                .replace(/GitBook/gi, '')
-                
-                // 불필요한 기호 제거
-                .replace(/^\d+\.\s*/, '')
-                .replace(/^\s*[-–—]\s*/, '')
-                .replace(/\s*[-–—]\s*$/, '')
-                .replace(/[,;]\s*$/, '')
-                
-                // 공백 정리
-                .replace(/\s+/g, ' ')
+
+        // 🔍 JSDOM을 사용한 더 정확한 뉴스 추출
+        const { JSDOM } = require('jsdom');
+        const dom = new JSDOM(htmlContent);
+        const document = dom.window.document;
+
+        // h2 태그들을 찾아서 각각의 본문 내용과 매칭
+        const h2Elements = Array.from(document.querySelectorAll('h2'));
+
+        for (const h2 of h2Elements) {
+            let title = (h2 as Element).textContent?.trim() || '';
+
+            // 🔥 제목에서 "(원문)" 제거
+            title = title
+                .replace(/\s*\(원문\)\s*/g, '')
+                .replace(/\s*원문\s*/g, '')
                 .trim();
-            
-            // 품질 검사
-            if (title.length >= 5 && title.length <= 200 && 
-                !title.includes('http') && 
-                !title.includes('www.') &&
-                !title.includes('.com') &&
-                title.match(/[가-힣A-Za-z0-9]/)) {
-                
-                // 중복 체크
-                const isDuplicate = articles.some(article => 
-                    article.title.toLowerCase().includes(title.toLowerCase().substring(0, 10)) ||
-                    title.toLowerCase().includes(article.title.toLowerCase().substring(0, 10))
-                );
-                
-                if (!isDuplicate) {
-                    // 내용 생성
-                    const content = `${title}에 대한 상세한 뉴스 내용입니다. 원문을 확인하여 더 자세한 정보를 얻으실 수 있습니다.`;
-                    const summary = title.substring(0, 100) + '...';
-                    
-                 articles.push({
-                        title: decodeHtmlEntities(title),
-                        content: decodeHtmlEntities(content),
-                        summary: decodeHtmlEntities(summary)
-                    });
-                    
-                    console.log(`[GitBook] ✅ 뉴스 추출: "${title.substring(0, 30)}..."`);
-                    
-                    if (articles.length >= 25) break;
+
+            // 유효한 뉴스 제목인지 확인
+            if (title.length < 5 || title.length > 200) continue;
+
+            // 제외할 키워드 체크
+            const excludeKeywords = [
+                '목차', '페이지', '메뉴', '홈', 'home', '로그인', 'login',
+                '오선', '라이브 리포트', '전일 요약', '실적 발표', '주요일정',
+                '오늘의 소식', 'greeting', 'news', 'summary', '개별 기업'
+            ];
+
+            const shouldExclude = excludeKeywords.some(keyword =>
+                title.toLowerCase().includes(keyword.toLowerCase())
+            );
+
+            if (shouldExclude) continue;
+
+            // 해당 h2의 본문 내용 수집
+            let content = '';
+            let currentNode = (h2 as Element).nextElementSibling;
+
+            while (currentNode) {
+                // 다음 h2를 만나면 중단
+                if (currentNode.tagName === 'H2') {
+                    break;
                 }
+
+                // 본문 내용 수집
+                if (['P', 'UL', 'OL', 'DIV', 'BLOCKQUOTE', 'LI'].includes(currentNode.tagName)) {
+                    let text = currentNode.textContent?.trim() || '';
+
+                    // 🔥 본문에서도 "(원문)" 제거
+                    text = text
+                        .replace(/\s*\(원문\)\s*/g, '')
+                        .replace(/\s*원문\s*/g, '')
+                        .trim();
+
+                    if (text && text.length > 10) {
+                        content += text + '\n\n';
+                    }
+                }
+
+                currentNode = currentNode.nextElementSibling;
             }
+
+            // 내용 정리
+            content = content
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
+
+            // 충분한 내용이 있으면 추가
+            if (content.length > 50) {
+                const summary = content.length > 100 ? content.substring(0, 100) + '...' : content;
+
+                articles.push({
+                    title: decodeHtmlEntities(title),
+                    content: decodeHtmlEntities(content),
+                    summary: decodeHtmlEntities(summary)
+                });
+
+                console.log(`[GitBook] ✅ 뉴스 추출: "${title.substring(0, 30)}..." (${content.length} chars)`);
+            } else {
+                // 내용이 부족하면 기본 설명 추가
+                const defaultContent = `${title}에 대한 뉴스입니다. 자세한 내용은 원문을 확인해주세요.`;
+                const defaultSummary = title.length > 50 ? title.substring(0, 50) + '...' : title;
+
+                articles.push({
+                    title: decodeHtmlEntities(title),
+                    content: decodeHtmlEntities(defaultContent),
+                    summary: decodeHtmlEntities(defaultSummary)
+                });
+
+                console.log(`[GitBook] ⚠️ 제목만 추출: "${title.substring(0, 30)}..."`);
+            }
+
+            if (articles.length >= 25) break;
         }
-        
-        console.log(`[GitBook] 📊 총 매치: ${totalMatches}개, 유효 뉴스: ${articles.length}개`);
-        
-        // 🆘 확장된 폴백 뉴스 - 더 많은 최신 뉴스 추가
-        if (totalMatches === 0 || articles.length < 3) {
+
+        console.log(`[GitBook] 📊 h2 기반 추출: ${articles.length}개`);
+
+        // 🆘 확장된 폴백 뉴스 - 더 많은 최신 뉴스 추가 (원문 표시 제거)
+        if (articles.length < 3) {
             const fallbackNews = [
                 {
                     title: "캐나다, 디지털세 철회…무역 협상 재개",
@@ -7223,19 +7488,14 @@ function extractDetailedNewsContent(htmlContent: string): { articles: any[], tit
                     summary: "캐나다 정부가 미국과의 무역 협상 재개를 위해, 구글과 메타 등 빅테크에 부과하려던 '디지털 서비스세'를 철회함."
                 },
                 {
-                    title: "모건스탠리, 연준 금리 인하가 미국 증시 상승 이끌 것",
-                    content: "모건 스탠리의 마이클 윌슨은 연준의 금리 인하가 미국 주식 시장에 긍정적인 영향을 미칠 것이라는 낙관적인 전망을 내놓음. 최근 데이터에 따르면 인플레이션보다 고용 시장의 둔화가 더 큰 위험으로 부상하고 있으며, 이것이 연준의 금리 인하 기대를 앞당겨 주식 시장에 오히려 긍정적으로 작용할 수 있다고 분석함.",
-                    summary: "모건 스탠리의 마이클 윌슨은 연준의 금리 인하가 미국 주식 시장에 긍정적인 영향을 미칠 것이라는 낙관적인 전망을 내놓음."
+                    title: "미국 경제 지표 개선으로 시장 낙관론 확산",
+                    content: "최근 발표된 미국 경제 지표들이 예상보다 양호한 수치를 기록하면서 시장에 낙관론이 확산되고 있음. 특히 고용시장의 안정세와 소비자 신뢰지수 상승이 경제 회복세를 뒷받침하고 있으며, 이는 주식시장에 긍정적인 영향을 미치고 있음.",
+                    summary: "최근 발표된 미국 경제 지표들이 예상보다 양호한 수치를 기록하면서 시장에 낙관론이 확산되고 있음."
                 },
                 {
-                    title: "골드만삭스, 미국 연기금 280억 달러 매도 전망",
-                    content: "골드만삭스는 미국 연기금이 주가 급등 후 약 280억 달러 규모의 주식을 매도할 것으로 전망한다고 발표함. 이는 자산 배분 리밸런싱 차원에서 이루어지는 것으로, 주식 비중이 목표치를 초과했기 때문임. 하지만 이러한 매도 압력은 일시적일 것으로 예상되며, 장기적으로는 시장에 큰 영향을 주지 않을 것으로 분석됨.",
-                    summary: "골드만삭스는 미국 연기금이 주가 급등 후 약 280억 달러 규모의 주식을 매도할 것으로 전망한다고 발표함."
-                },
-                {
-                    title: "월가 애널리스트, S&P 500 급등세에 FOMO 콜옵션 매수 열풍",
-                    content: "월가 애널리스트들은 S&P 500의 급등세 속에서 투자자들이 FOMO(Fear of Missing Out) 심리로 콜옵션 매수에 나서고 있다고 분석함. 특히 단기 만료 콜옵션의 거래량이 급증하고 있으며, 이는 추가 상승에 대한 기대감을 반영한다고 해석됨. 하지만 과도한 낙관론은 시장 변동성을 높일 수 있어 주의가 필요하다고 경고함.",
-                    summary: "월가 애널리스트들은 S&P 500의 급등세 속에서 투자자들이 FOMO 심리로 콜옵션 매수에 나서고 있다고 분석함."
+                    title: "기술주 중심 시장 상승세, AI 관련 기업 주목",
+                    content: "인공지능(AI) 기술 발전과 관련 기업들의 실적 개선 기대감으로 기술주 중심의 시장 상승세가 지속되고 있음. 특히 반도체와 소프트웨어 기업들의 주가가 강세를 보이며 전체 시장을 견인하고 있음.",
+                    summary: "인공지능 기술 발전과 관련 기업들의 실적 개선 기대감으로 기술주 중심의 시장 상승세가 지속되고 있음."
                 },
                 {
                     title: "연준, 인플레이션 둔화 신호에 금리 인하 기대감 증가",
@@ -7253,229 +7513,82 @@ function extractDetailedNewsContent(htmlContent: string): { articles: any[], tit
                     summary: "이번 분기 실적 발표 시즌에서 주요 기업들의 실적 개선이 기대되고 있음."
                 }
             ];
-            
+
             // 기존 추출된 뉴스와 중복되지 않는 폴백 뉴스만 추가
             const existingTitles = articles.map(a => a.title.toLowerCase());
-            const uniqueFallbackNews = fallbackNews.filter(news => 
+            const uniqueFallbackNews = fallbackNews.filter(news =>
                 !existingTitles.some(title => title.includes(news.title.substring(0, 10).toLowerCase()))
             );
-            
+
             articles.push(...uniqueFallbackNews.slice(0, 7 - articles.length));
             console.log(`[GitBook] 📄 확장된 폴백 뉴스 ${uniqueFallbackNews.length}개 추가`);
         }
-        
+
         // 중복 제거 및 품질 향상
-        const uniqueArticles = articles.filter((article, index, self) => 
+        const uniqueArticles = articles.filter((article, index, self) =>
             index === self.findIndex(a => a.title === article.title)
         );
-        
+
         console.log(`[GitBook] ✅ 세부 뉴스 내용 ${uniqueArticles.length}개 추출 완료`);
-        
-        return { 
+
+        return {
             articles: uniqueArticles.slice(0, 25), // 🔥 최대 25개로 대폭 확장
-            title: '📰 주요 뉴스 상세' 
+            title: '📰 주요 뉴스 상세'
         };
-        
+
     } catch (error) {
         console.error('[GitBook] 세부 뉴스 내용 추출 중 오류:', error);
-        return { 
-            articles: [{ 
-                title: "뉴스 내용을 가져올 수 없습니다", 
+        return {
+            articles: [{
+                title: "뉴스 내용을 가져올 수 없습니다",
                 content: "현재 세부 뉴스 내용을 추출할 수 없습니다.",
                 summary: "뉴스 내용 추출 실패"
-            }], 
-            title: "📰 뉴스 내용" 
+            }],
+            title: "📰 뉴스 내용"
         };
     }
 }
 
 // 전역 변수로 월가의 말말말 저장 (컴포넌트 간 공유용) - 이미 상단에서 선언됨
 
-// 🔥 GitBook 헤드라인 뉴스 추출 함수 (강화된 HTML 파싱)
-function extractGitBookHeadlines(html: string, baseUrl: string): NewsArticle[] {
-    const articles: NewsArticle[] = [];
-    
-    try {
-        console.log('[GitBook] 🔍 사이드바 헤드라인 뉴스 추출 시작...');
-        
-        // 사용자가 제공한 구조에 맞는 패턴: <span class="">뉴스 제목 (원문)</span>
-        const specificPatterns = [
-            // 패턴 1: span 태그 안의 뉴스 헤드라인 (더 관대한 패턴)
-            /<span[^>]*>([^<]*(?:미국|중국|트럼프|연준|금리|증시|주식|경제|반도체|설계|소프트웨어|규제|해제)[^<]*(?:\([^)]*원문[^)]*\))?[^<]*)<\/span>/gi,
-            
-            // 패턴 2: li 태그 안의 모든 텍스트 (더 포괄적)
-            /<li[^>]*>([^<]*(?:미국|중국|트럼프|연준|금리|증시|주식|경제|반도체|설계|소프트웨어|규제|해제)[^<]*)<\/li>/gi,
-            
-            // 패턴 3: 링크가 있는 경우 (향상된 패턴)
-            /<a[^>]*href\s*=\s*['"']([^"']*)['"'][^>]*>\s*(?:<span[^>]*>)?([^<]*(?:미국|중국|트럼프|연준|금리|증시|주식|경제|반도체|설계|소프트웨어|규제|해제)[^<]*)(?:<\/span>)?/gi,
-            
-            // 패턴 4: div나 p 태그 안의 텍스트
-            /<(?:div|p)[^>]*>([^<]*(?:미국|중국|트럼프|연준|금리|증시|주식|경제|반도체|설계|소프트웨어|규제|해제)[^<]*)<\/(?:div|p)>/gi,
-            
-            // 패턴 5: 텍스트 노드에서 직접 추출 (class가 없는 span)
-            /<span\s*>([^<]*(?:미국|중국|트럼프|연준|금리|증시|주식|경제|반도체|설계|소프트웨어|규제|해제)[^<]*)<\/span>/gi
-        ];
-        
-        console.log('[GitBook] 🔍 사이드바 특화 패턴으로 헤드라인 검색 중...');
-        
-        for (let i = 0; i < specificPatterns.length; i++) {
-            const pattern = specificPatterns[i];
-            let match;
-            let patternMatches = 0;
-            
-            console.log(`[GitBook] 🔍 패턴 ${i + 1} 검색 중...`);
-            
-            while ((match = pattern.exec(html)) !== null) {
-                let title, href = '#';
-                
-                if (match.length === 3) {
-                    // 링크가 있는 경우 (패턴 3)
-                    href = match[1];
-                    title = match[2];
-                } else {
-                    // 링크가 없는 경우 (패턴 1, 2, 4, 5)
-                    title = match[1];
-                }
-                
-                // HTML 태그 제거 및 텍스트 정리
-                title = title.replace(/<[^>]+>/g, '').trim();
-                title = decodeHtmlEntities(title);
-                
-                // 디버깅을 위해 매치된 내용 출력
-                console.log(`[GitBook] 🔍 패턴 ${i + 1} 매치: "${title.substring(0, 100)}${title.length > 100 ? '...' : ''}"`);
-                
-                // 유효한 헤드라인인지 검증
-                if (isValidHeadlineTitle(title, href)) {
-                    // URL 정규화
-                    const finalUrl = href !== '#' ? normalizeUrl(href, baseUrl) : baseUrl;
-                    
-                    // 중복 체크
-                    const isDuplicate = articles.some(article => article.title === title);
-                    if (!isDuplicate) {
-                        articles.push({
-                            title: title,
-                            url: finalUrl,
-                            publishedAt: new Date().toISOString(),
-                            source: '오선 (Osen)',
-                            language: 'kr',
-                            summary: title, // 헤드라인은 제목을 요약으로 사용
-                            content: `${title}\n\n이 헤드라인은 오선 GitBook의 사이드바에서 추출된 최신 뉴스입니다.`, 
-                            category: 'headline', // 헤드라인임을 표시
-                            isGeminiGenerated: false
-                        });
-                        
-                        patternMatches++;
-                        console.log(`[GitBook] ✅ 패턴 ${i + 1} 헤드라인 추가: "${title.substring(0, 50)}..."`);
-                    } else {
-                        console.log(`[GitBook] ⚠️ 중복 헤드라인 스킵: "${title.substring(0, 50)}..."`);
-                    }
-                } else {
-                    console.log(`[GitBook] ❌ 패턴 ${i + 1} 유효하지 않은 헤드라인: "${title.substring(0, 50)}..."`);
-                }
-            }
-            
-            console.log(`[GitBook] 📊 패턴 ${i + 1} 완료: ${patternMatches}개 매치`);
-        }
-        
-        // 추가 패턴: HTML에서 뉴스 키워드가 포함된 모든 텍스트 추출
-        try {
-            console.log('[GitBook] 🔍 전체 HTML에서 뉴스 텍스트 검색 중...');
-            
-            // HTML에서 모든 텍스트 노드 추출 (태그 제거)
-            const plainText = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '') // 스크립트 제거
-                                  .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '') // 스타일 제거
-                                  .replace(/<[^>]+>/g, ' ') // 모든 HTML 태그 제거
-                                  .replace(/\s+/g, ' ') // 연속 공백 제거
-                                  .trim();
-            
-            // 뉴스 키워드가 포함된 문장들 찾기
-            const newsKeywords = ['미국', '중국', '트럼프', '연준', '금리', '증시', '주식', '경제', '반도체', '설계', '소프트웨어', '규제', '해제'];
-            const sentences = plainText.split(/[.!?;]/).filter(sentence => sentence.trim().length > 0);
-            
-            console.log(`[GitBook] 📝 전체 텍스트에서 ${sentences.length}개 문장 분석 중...`);
-            
-            for (const sentence of sentences) {
-                const trimmedSentence = sentence.trim();
-                
-                // 뉴스 키워드가 포함되어 있고 적절한 길이인지 확인
-                const hasNewsKeyword = newsKeywords.some(keyword => trimmedSentence.includes(keyword));
-                
-                if (hasNewsKeyword && trimmedSentence.length > 15 && trimmedSentence.length < 150) {
-                    const title = decodeHtmlEntities(trimmedSentence);
-                    
-                    // 중복 체크
-                    const isDuplicate = articles.some(article => 
-                        article.title === title || 
-                        article.title.includes(title.substring(0, 30)) ||
-                        title.includes(article.title.substring(0, 30))
-                    );
-                    
-                    if (!isDuplicate && isValidHeadlineTitle(title, '#')) {
-                        articles.push({
-                            title: title,
-                            url: baseUrl,
-                            publishedAt: new Date().toISOString(),
-                            source: '오선 (Osen)',
-                            language: 'kr',
-                            summary: title,
-                            content: `${title}\n\n이 헤드라인은 오선 GitBook에서 추출된 최신 뉴스입니다.`,
-                            category: 'headline',
-                            isGeminiGenerated: false
-                        });
-                        
-                        console.log(`[GitBook] ✅ 텍스트 분석에서 뉴스 발견: "${title.substring(0, 50)}..."`);
-                    }
-                }
-            }
-            
-            console.log(`[GitBook] 📊 텍스트 분석 완료: ${articles.length}개 총 헤드라인`);
-            
-        } catch (textError) {
-            console.warn('[GitBook] 텍스트 분석 중 오류:', textError);
-        }
-        
-        // 중복 제거
-        const uniqueArticles = articles.filter((article, index, self) => 
-            index === self.findIndex(a => a.title === article.title)
-        );
-        
-        console.log(`[GitBook] ✅ 헤드라인 뉴스 ${uniqueArticles.length}개 추출 완료`);
-        return uniqueArticles;
-        
-    } catch (error) {
-        console.error('[GitBook] 헤드라인 추출 실패:', error);
-        return [];
-    }
-}
+// 🔥 GitBook 헤드라인 뉴스 추출 함수는 gitbookNewsExtractor.ts의 parseGitBookNews로 대체되었습니다.
+// parseGitBookNews 함수는 청사진(Blueprint) 방법론을 적용하여 
+// h2 태그(헤드라인)와 그에 속한 p/ul 태그(본문)를 정확히 1:1 매칭합니다.
 
 // 🔧 헤드라인 제목 유효성 검증 함수
 function isValidHeadlineTitle(title: string, href: string): boolean {
-    if (!title || !href) return false;
-    
-    // 길이 체크
+    if (!title) return false;
+
+    // 길이 체크 (너무 짧거나 너무 길면 제외)
     if (title.length < 5 || title.length > 200) return false;
-    
-    // 제외할 키워드들
+
+    // 제외할 키워드들 (메뉴/홈/검색 등)
     const excludeKeywords = [
         '목차', '페이지', '메뉴', '홈', 'home', '로그인', 'login',
         '회원가입', 'signup', '검색', 'search', '설정', 'settings',
         '이전', '다음', 'prev', 'next', '더보기', 'more'
     ];
-    
+    // 안내/섹션명/소개성 헤드라인 추가 필터
+    const extraExcludeKeywords = [
+        '오선', '라이브 리포트', '전일 요약', '실적 발표', '주요일정', '오늘의 소식', 'greeting', 'news', 'summary'
+    ];
     const lowerTitle = title.toLowerCase();
     for (const keyword of excludeKeywords) {
         if (lowerTitle.includes(keyword.toLowerCase())) return false;
     }
-    
+    for (const keyword of extraExcludeKeywords) {
+        if (lowerTitle.includes(keyword.toLowerCase())) return false;
+    }
+
     // 숫자만 있는 제목 제외
-    if (/^\d+$/.test(title)) return false;
-    
+    if (/^[0-9]+$/.test(title)) return false;
     // 특수문자만 있는 제목 제외
     if (/^[^\w가-힣]+$/.test(title)) return false;
-    
-    // URL이 유효한지 기본 체크
-    if (href.includes('#') && href.split('#')[0] === '') return false; // 앵커 링크만 있는 경우
-    
+
+    // (수정) href가 '#'이거나 비어 있어도, title이 뉴스 헤드라인이면 허용
+    // 기존: if (href.includes('#') && href.split('#')[0] === '') return false;
+    // → 이 조건 제거
+
     return true;
 }
 
@@ -7485,15 +7598,15 @@ function normalizeUrl(href: string, baseUrl: string): string {
         if (href.startsWith('http://') || href.startsWith('https://')) {
             return href;
         }
-        
+
         if (href.startsWith('/')) {
             return 'https://futuresnow.gitbook.io' + href;
         }
-        
+
         if (href.startsWith('./') || href.startsWith('../')) {
             return baseUrl; // 상대 경로는 베이스 URL로 대체
         }
-        
+
         return baseUrl; // 기타 경우
     } catch (error) {
         console.warn('[GitBook] URL 정규화 실패:', error);
@@ -7504,12 +7617,12 @@ function normalizeUrl(href: string, baseUrl: string): string {
 // 💬 사이드바에서 월가의 말말말 세부 내용 추출 함수
 async function extractWallStreetDetailsFromSidebar(html: string, baseUrl: string): Promise<{ comments: string[], hasWallStreetNews: boolean }> {
     console.log('[GitBook] 💬 사이드바에서 월가의 말말말 검색 시작...');
-    
+
     try {
-        // 사이드바 헤드라인에서 "월가의 말말말" 관련 링크 찾기
+        // 사이드바에서 뉴스 추출 (청사진 방법론 적용)
         const wallStreetKeywords = ['월가의 말말말', '월가', 'wall street', '애널리스트', 'analyst'];
-        const headlines = extractGitBookHeadlines(html, baseUrl);
-        
+        const headlines = parseGitBookNews(html, baseUrl);
+
         let wallStreetHeadline = null;
         for (const headline of headlines) {
             for (const keyword of wallStreetKeywords) {
@@ -7521,10 +7634,10 @@ async function extractWallStreetDetailsFromSidebar(html: string, baseUrl: string
             }
             if (wallStreetHeadline) break;
         }
-        
+
         if (wallStreetHeadline && wallStreetHeadline.url) {
             console.log(`[GitBook] 🔗 월가의 말말말 세부 페이지 접근: ${wallStreetHeadline.url}`);
-            
+
             // 세부 페이지에서 실제 월가 코멘트 크롤링
             try {
                 const detailResponse = await fetch(wallStreetHeadline.url, {
@@ -7533,16 +7646,16 @@ async function extractWallStreetDetailsFromSidebar(html: string, baseUrl: string
                     },
                     signal: AbortSignal.timeout(5000) // 5초로 단축
                 });
-                
+
                 if (detailResponse.ok) {
                     const detailHtml = await detailResponse.text();
                     const wallStreetData = extractWallStreetComments(detailHtml);
-                    
+
                     if (wallStreetData.comments.length > 0) {
                         console.log(`[GitBook] ✅ 월가의 말말말 세부 내용 ${wallStreetData.comments.length}개 추출 완료`);
-                        return { 
-                            comments: wallStreetData.comments, 
-                            hasWallStreetNews: true 
+                        return {
+                            comments: wallStreetData.comments,
+                            hasWallStreetNews: true
                         };
                     }
                 }
@@ -7550,10 +7663,10 @@ async function extractWallStreetDetailsFromSidebar(html: string, baseUrl: string
                 console.error('[GitBook] 월가의 말말말 세부 페이지 접근 실패:', detailError);
             }
         }
-        
+
         console.log('[GitBook] 📝 사이드바에서 월가의 말말말을 찾지 못함');
         return { comments: [], hasWallStreetNews: false };
-        
+
     } catch (error) {
         console.error('[GitBook] 사이드바 월가의 말말말 추출 중 오류:', error);
         return { comments: [], hasWallStreetNews: false };
@@ -7561,9 +7674,9 @@ async function extractWallStreetDetailsFromSidebar(html: string, baseUrl: string
 }
 
 // 🔥 GitBook 동적 날짜 뉴스 크롤링 함수 (헤드라인 우선 크롤링)
-export async function getGitBookLatestNews(language: string): Promise<NewsArticle[]> {
+export async function getGitBookLatestNews(language: string): Promise<{ marketNews: NewsArticle[], wallStreetComments: string[], schedule: string[], scheduleTitle: string }> {
     console.log(`[GitBook] 🚀 동적 날짜 뉴스 크롤링 시작 (언어: ${language})`);
-    
+
     try {
         // 1. 현재 활성 날짜 확인 (없으면 최신 날짜 찾기)
         if (!currentActiveDate) {
@@ -7572,25 +7685,25 @@ export async function getGitBookLatestNews(language: string): Promise<NewsArticl
             lastSuccessfulDate = currentActiveDate;
             console.log(`[GitBook] ✅ 초기 날짜 설정: ${currentActiveDate}`);
         }
-        
+
         let targetUrl = `https://futuresnow.gitbook.io/newstoday/${currentActiveDate}/news/today/bloomberg`;
-        
+
         console.log(`[GitBook] 📅 현재 활성 날짜 사용: ${currentActiveDate}`);
         console.log(`[GitBook] 🎯 대상 URL: ${targetUrl}`);
 
         // 2. 현재 날짜 링크 유효성 확인 (빠른 HEAD 요청)
         try {
-            const headResponse = await fetch(targetUrl, { 
+            const headResponse = await fetch(targetUrl, {
                 method: 'HEAD',
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
                 signal: AbortSignal.timeout(3000) // 3초 타임아웃
             });
-            
+
             if (!headResponse.ok) {
                 console.log(`[GitBook] ⚠️ 현재 날짜 ${currentActiveDate} 페이지 접근 불가 (${headResponse.status})`);
-                
+
                 // 3. 롤백: 마지막 성공 날짜로 복구
                 if (lastSuccessfulDate && lastSuccessfulDate !== currentActiveDate) {
                     console.log(`[GitBook] 🔄 롤백 실행: ${currentActiveDate} → ${lastSuccessfulDate}`);
@@ -7600,13 +7713,13 @@ export async function getGitBookLatestNews(language: string): Promise<NewsArticl
                 } else {
                     // 최신 유효 날짜 찾기
                     console.log('[GitBook] 🔍 새로운 유효 날짜 찾기 시도...');
-                 const fallbackDate = await findLatestValidGitBookDate();
-                 if (fallbackDate) {
-                    currentActiveDate = fallbackDate;
-                    lastSuccessfulDate = fallbackDate;
-                    targetUrl = `https://futuresnow.gitbook.io/newstoday/${fallbackDate}/news/today/bloomberg`;
+                    const fallbackDate = await findLatestValidGitBookDate();
+                    if (fallbackDate) {
+                        currentActiveDate = fallbackDate;
+                        lastSuccessfulDate = fallbackDate;
+                        targetUrl = `https://futuresnow.gitbook.io/newstoday/${fallbackDate}/news/today/bloomberg`;
                         console.log(`[GitBook] ✅ 새로운 유효 날짜 발견: ${fallbackDate}`);
-                 }
+                    }
                 }
             } else {
                 console.log(`[GitBook] ✅ 현재 날짜 ${currentActiveDate} 페이지 접근 가능`);
@@ -7616,9 +7729,9 @@ export async function getGitBookLatestNews(language: string): Promise<NewsArticl
         } catch (headError) {
             console.log(`[GitBook] HEAD 요청 실패, 바로 GET 요청으로 진행:`, headError);
         }
-        
+
         // 3. 실제 콘텐츠 크롤링 (타임아웃 8초로 조정)
-        const response = await fetch(targetUrl, { 
+        const response = await fetch(targetUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -7628,74 +7741,81 @@ export async function getGitBookLatestNews(language: string): Promise<NewsArticl
             },
             signal: AbortSignal.timeout(8000) // 8초로 조정
         });
-        
+
         if (!response.ok) {
             throw new Error(`GitBook HTTP ${response.status}: ${response.statusText}`);
         }
-        
+
         const html = await response.text();
         console.log(`[GitBook] ✅ HTML 콘텐츠 수신 완료: ${html.length} characters`);
-        
-        // 4. 헤드라인 뉴스 추출 (우선적으로 사이드바에서 추출)
-        const headlineArticles = extractGitBookHeadlines(html, targetUrl);
-        console.log(`[GitBook] 📰 사이드바 헤드라인 뉴스 ${headlineArticles.length}개 추출`);
-        
+
+        // 4. 헤드라인 뉴스 추출 (청사진 방법론 적용 - h2와 본문을 정확히 매칭)
+        const allArticles = parseGitBookNews(html, targetUrl);
+        console.log(`[GitBook] 📰 청사진 방법론으로 뉴스 ${allArticles.length}개 추출 (헤드라인 + 본문)`);
+
+        // 월가의 말말말 필터링
+        const { marketNews: headlineArticles, wallStreetComments: extractedWallStreetArticles } = filterWallStreetComments(allArticles);
+        console.log(`[GitBook] 📰 시장 뉴스 ${headlineArticles.length}개, 월가 관련 ${extractedWallStreetArticles.length}개로 분류`);
+
         // 5. 주요 일정 추출 (이름을 "주요 일정"으로 변경됨)
         const { schedule, title: scheduleTitle } = extractUpcomingSchedule(html);
-        
+
         // 6. 사이드바에서 월가의 말말말 세부 내용 찾기
         const sidebarWallStreet = await extractWallStreetDetailsFromSidebar(html, targetUrl);
-        
-        // 7. 월가의 말말말 추출 (사이드바에서 찾지 못한 경우에만 메인 본문에서 추출)
-        let wallStreetComments, wallStreetTitle;
-        if (sidebarWallStreet.hasWallStreetNews && sidebarWallStreet.comments.length > 0) {
+
+        // 7. 월가의 말말말 추출 
+        let wallStreetComments = [];
+        let wallStreetTitle = '애널리스트 코멘트';
+
+        // 이미 추출된 월가 관련 기사들의 본문을 코멘트로 변환
+        if (extractedWallStreetArticles.length > 0) {
+            console.log('[GitBook] ✅ 추출된 월가 관련 뉴스를 코멘트로 변환');
+            wallStreetComments = extractedWallStreetArticles.map(article => article.content);
+        } else if (sidebarWallStreet.hasWallStreetNews && sidebarWallStreet.comments.length > 0) {
             console.log('[GitBook] ✅ 사이드바에서 월가의 말말말 세부 내용 사용');
             wallStreetComments = sidebarWallStreet.comments;
-            wallStreetTitle = '💬 월가의 말말말';
         } else {
             console.log('[GitBook] 📝 메인 본문에서 월가의 말말말 추출');
             const mainWallStreet = extractWallStreetComments(html);
             wallStreetComments = mainWallStreet.comments;
             wallStreetTitle = mainWallStreet.title;
         }
-        
+
         // 8. 세부 뉴스 내용 추출 (메인 본문은 더 이상 시장 뉴스로 사용하지 않음)
         const { articles: detailedArticles } = extractDetailedNewsContent(html);
-        
+
         // 9. 전역 변수에 정보 저장 (다른 컴포넌트에서 접근 가능)
         globalUpcomingSchedule = schedule;
         globalWallStreetComments = wallStreetComments;
-        
+
         if (typeof window !== 'undefined') {
             (window as any).upcomingMarketSchedule = schedule;
             (window as any).wallStreetComments = wallStreetComments;
         }
-        
+
         // 10. 뉴스 기사 생성 (헤드라인을 시장 뉴스로 우선 사용)
         const newsArticles: NewsArticle[] = [];
         const currentDateForTitle = currentActiveDate || await findLatestValidGitBookDate() || "최신";
-        
-        // 10-1. 헤드라인 뉴스를 시장 뉴스로 추가 (세부 내용 포함)
-        console.log(`[GitBook] 📰 사이드바 헤드라인을 시장 뉴스로 ${headlineArticles.length}개 추가`);
-        headlineArticles.forEach((headline, index) => {
-            // 헤드라인에 더 상세한 내용 추가
-            const enhancedSummary = `${headline.title} - 오선 GitBook에서 제공하는 최신 시장 뉴스입니다. 클릭하여 자세한 내용을 확인하세요.`;
-            const enhancedContent = `${headline.title}\n\n이 뉴스는 오선의 GitBook 사이드바 헤드라인에서 추출된 최신 시장 정보입니다. 원문은 다음 링크에서 확인할 수 있습니다: ${headline.url}`;
-            
+
+        // 10-1. 청사진 방법론으로 추출된 뉴스를 시장 뉴스로 추가 (헤드라인 + 본문 포함)
+        // 시장 뉴스 개수 제한 (최대 25개)
+        const maxMarketNews = 25;
+        const limitedHeadlineArticles = headlineArticles.slice(0, maxMarketNews);
+
+        console.log(`[GitBook] 📰 시장 뉴스 ${limitedHeadlineArticles.length}개 추가 (전체 ${headlineArticles.length}개 중 최대 ${maxMarketNews}개로 제한)`);
+        limitedHeadlineArticles.forEach((article) => {
             newsArticles.push({
-                ...headline,
-                summary: decodeHtmlEntities(enhancedSummary),
-                content: decodeHtmlEntities(enhancedContent),
+                ...article,
                 category: 'market' // 시장 뉴스로 분류
             });
         });
-        
-        // 10-2. 메인 요약 기사 추가 (모든 정보 포함) - 참고용
+
+        // 10-2. 메인 요약 기사, detailedArticles 등은 참고용으로만 사용 (시장 뉴스에 포함하지 않음)
         let allDetailedContent = '';
         detailedArticles.forEach((article, index) => {
             allDetailedContent += `\n\n=== ${article.title} ===\n${article.content}`;
         });
-        
+
         const mainTitle = `오선의 미국 증시 전일 요약 (${currentDateForTitle})`;
         const mainSummary = `오선이 제공하는 ${currentDateForTitle} 미국 증시 전일 요약입니다. 자세한 내용은 클릭하여 AI 요약을 확인하세요.`;
 
@@ -7714,32 +7834,44 @@ export async function getGitBookLatestNews(language: string): Promise<NewsArticl
             wallStreetTitle: decodeHtmlEntities(wallStreetTitle),
             isGeminiGenerated: false
         });
-        
-        console.log(`[GitBook] ✅ 전체 뉴스 크롤링 완료:`);
-        console.log(`[GitBook]   - 사이드바 헤드라인 → 시장 뉴스: ${headlineArticles.length}개`);
-        console.log(`[GitBook]   - 메인 요약 기사 (참고용): 1개`);
-        console.log(`[GitBook]   - 총 기사: ${newsArticles.length}개`);
+
+        console.log(`[GitBook] ✅ 전체 뉴스 크롤링 완료 (청사진 방법론 적용):`);
+        console.log(`[GitBook]   - 전체 추출 뉴스: ${allArticles.length}개 (h2 + 본문 매칭)`);
+        console.log(`[GitBook]   - 시장 뉴스: ${headlineArticles.length}개`);
+        console.log(`[GitBook]   - 월가 관련 뉴스: ${extractedWallStreetArticles.length}개`);
+        console.log(`[GitBook]   - 메인 요약 기사: 1개`);
+        console.log(`[GitBook]   - 총 반환 기사: ${newsArticles.length}개`);
         console.log(`[GitBook]   - 주요 일정: ${schedule.length}개 항목`);
-        console.log(`[GitBook]   - 월가 코멘트: ${wallStreetComments.length}개 ${sidebarWallStreet.hasWallStreetNews ? '(사이드바 세부)' : '(메인 본문)'}`);
-        
-        return newsArticles;
-        
+        console.log(`[GitBook]   - 월가 코멘트: ${wallStreetComments.length}개`);
+
+        return {
+            marketNews: newsArticles,
+            wallStreetComments: wallStreetComments,
+            schedule: schedule,
+            scheduleTitle: scheduleTitle
+        };
+
     } catch (error) {
         console.error('[GitBook] 크롤링 실패:', error);
-        
+
         // 강화된 폴백 시스템 (2025-07-01 기준)
         const enhanced2025Fallback = getEnhanced2025FallbackNews();
-        
+
         // 전역 변수에 폴백 정보 저장
         globalUpcomingSchedule = enhanced2025Fallback.schedule;
         globalWallStreetComments = enhanced2025Fallback.wallStreetComments;
-        
+
         if (typeof window !== 'undefined') {
             (window as any).upcomingMarketSchedule = enhanced2025Fallback.schedule;
             (window as any).wallStreetComments = enhanced2025Fallback.wallStreetComments;
         }
-        
-        return enhanced2025Fallback.articles;
+
+        return {
+            marketNews: enhanced2025Fallback.articles,
+            wallStreetComments: enhanced2025Fallback.wallStreetComments,
+            schedule: enhanced2025Fallback.schedule,
+            scheduleTitle: enhanced2025Fallback.scheduleTitle
+        };
     }
 }
 
@@ -7754,7 +7886,7 @@ function getEnhanced2025FallbackNews() {
         "💰 금융이벤트: Fed 금리 회의록 공개 (7월 3일)",
         "📱 기술주: 애플, 마이크로소프트, 엔비디아 주요 뉴스 주목"
     ];
-    
+
     const wallStreetComments = [
         "🏦 모건스탠리: 2025년 하반기 연준 금리 인하 예상, 미국 증시 상승 모멘텀 지속",
         "💰 골드만삭스: AI 붐 지속으로 기술주 강세 전망, 특히 엔비디아 목표가 상향",
@@ -7763,7 +7895,7 @@ function getEnhanced2025FallbackNews() {
         "⚡ 웰스파고: 전력 인프라주 강세 지속, AI 데이터센터 전력 수요 급증",
         "🔋 뱅크오브아메리카: 배터리·에너지 저장 관련주 상승 사이클 진입"
     ];
-    
+
     // 폴백 헤드라인 뉴스 생성
     const headlineNews = [
         {
@@ -7822,11 +7954,11 @@ function getEnhanced2025FallbackNews() {
             isGeminiGenerated: false
         }
     ];
-    
+
     const articles = [
         // 헤드라인 뉴스들을 먼저 추가
         ...headlineNews,
-        
+
         // 메인 요약 기사
         {
             title: '오선의 미국 증시 전일 요약 (2025-07-01 폴백)',
@@ -7840,10 +7972,10 @@ function getEnhanced2025FallbackNews() {
             schedule: schedule,
             scheduleTitle: '📅 주요 일정',
             wallStreetComments: wallStreetComments,
-            wallStreetTitle: '💬 월가의 말말말',
+            wallStreetTitle: ' 월가의 말말말',
             isGeminiGenerated: false
         },
-        
+
         // 세부 개별 기사들
         {
             title: '🎆 7월 독립기념일 휴장 안내',
@@ -7868,27 +8000,67 @@ function getEnhanced2025FallbackNews() {
             isGeminiGenerated: false
         }
     ];
-     
-    return { schedule, wallStreetComments, articles };
+
+    return { schedule, wallStreetComments, articles, scheduleTitle: '📅 주요 일정' };
 }
 
-// 📅 전역 일정 정보 접근 함수
-export async function getGlobalSchedule(): Promise<string[]> {
-    return globalUpcomingSchedule;
-}
 
-// 💬 전역 월가의 말말말 접근 함수
+
+// 💬 월가 애널리스트 리포트 캐시 관리
+let wallStreetAnalystReportsCache: {
+    data: string[];
+    lastUpdated: Date;
+} | null = null;
+
+const ANALYST_REPORTS_CACHE_DURATION = 4 * 60 * 60 * 1000; // 4시간
+
+// 💬 전역 월가의 말말말 접근 함수 (AI 애널리스트 리포트 통합)
 export async function getGlobalWallStreetComments(): Promise<string[]> {
-    // 최신 데이터가 없으면 GitBook에서 직접 가져오기
-    if (globalWallStreetComments.length === 0) {
-        try {
-            const newsArticles = await getGitBookLatestNews('kr');
-            // getGitBookLatestNews 실행 시 globalWallStreetComments가 업데이트됨
-        } catch (error) {
-            console.error('[WallStreet] 월가 코멘트 가져오기 실패:', error);
+    try {
+        // 캐시 확인
+        if (wallStreetAnalystReportsCache && 
+            wallStreetAnalystReportsCache.lastUpdated &&
+            new Date().getTime() - wallStreetAnalystReportsCache.lastUpdated.getTime() < ANALYST_REPORTS_CACHE_DURATION) {
+            console.log('[WallStreet] 📊 캐시된 애널리스트 리포트 사용');
+            return wallStreetAnalystReportsCache.data;
         }
+
+        // 새로운 AI 애널리스트 리포트 가져오기
+        console.log('[WallStreet] 🔄 최신 애널리스트 리포트 업데이트 중...');
+        const { getWallStreetAnalystReports } = await import('@/ai/flows/wall-street-analyst-reports');
+        const reports = await getWallStreetAnalystReports({ forceRefresh: true });
+        
+        // 리포트를 WallStreetComments 형식으로 변환
+        const formattedComments = reports.reports.map(report => {
+            const outlook = report.outlook === 'bullish' ? '강세' : 
+                          report.outlook === 'bearish' ? '약세' : '중립';
+            
+            return `🏦 ${report.institution} (${outlook}) - ${report.targetPrice || '목표가 미제시'}\n${report.summary}\n${report.keyPoints.map(point => `• ${point}`).join('\n')}`;
+        });
+        
+        // 캐시 업데이트
+        wallStreetAnalystReportsCache = {
+            data: formattedComments,
+            lastUpdated: new Date()
+        };
+        
+        console.log(`[WallStreet] ✅ 애널리스트 리포트 ${formattedComments.length}개 업데이트 완료`);
+        return formattedComments;
+        
+    } catch (error) {
+        console.error('[WallStreet] AI 리포트 가져오기 실패:', error);
+        
+        // 폴백: 기존 GitBook 데이터 사용
+        if (globalWallStreetComments.length === 0) {
+            try {
+                const newsArticles = await getGitBookLatestNews('kr');
+                // getGitBookLatestNews 실행 시 globalWallStreetComments가 업데이트됨
+            } catch (error) {
+                console.error('[WallStreet] GitBook 폴백도 실패:', error);
+            }
+        }
+        return globalWallStreetComments;
     }
-    return globalWallStreetComments;
 }
 
 // 🔄 동적 날짜 관리 유틸리티 함수들
@@ -7907,19 +8079,19 @@ export async function setCurrentActiveDate(date: string): Promise<{ success: boo
         if (!dateRegex.test(date)) {
             return { success: false, message: '올바른 날짜 형식이 아닙니다 (YYYY-MM-DD)' };
         }
-        
+
         // 평일인지 확인
         const testDate = new Date(date + 'T12:00:00.000Z');
         if (!isBusinessDay(testDate)) {
             return { success: false, message: '평일 날짜만 설정할 수 있습니다' };
         }
-        
+
         lastSuccessfulDate = currentActiveDate; // 백업
         currentActiveDate = date;
         lastUpdateAttempt = Date.now();
-        
+
         console.log(`[Dynamic Date] 활성 날짜 변경: ${lastSuccessfulDate} → ${currentActiveDate}`);
-        
+
         return { success: true, message: `활성 날짜가 ${date}로 설정되었습니다` };
     } catch (error) {
         return { success: false, message: `날짜 설정 실패: ${error}` };
@@ -7929,17 +8101,17 @@ export async function setCurrentActiveDate(date: string): Promise<{ success: boo
 export async function resetToLatestValidDate(): Promise<{ success: boolean; message: string; date?: string }> {
     try {
         console.log('[Dynamic Date] 최신 유효 날짜로 리셋 시도...');
-        
+
         const latestDate = await findLatestValidGitBookDate();
         if (latestDate) {
             lastSuccessfulDate = currentActiveDate; // 백업
             currentActiveDate = latestDate;
             lastUpdateAttempt = Date.now();
-            
+
             console.log(`[Dynamic Date] 최신 유효 날짜로 리셋 완료: ${latestDate}`);
-            
-            return { 
-                success: true, 
+
+            return {
+                success: true,
                 message: `최신 유효 날짜 ${latestDate}로 리셋되었습니다`,
                 date: latestDate
             };
@@ -7959,7 +8131,7 @@ export async function getDynamicDateStatus(): Promise<{
     isSystemActive: boolean;
 }> {
     let nextBusinessDate = null;
-    
+
     if (currentActiveDate) {
         try {
             const currentDate = new Date(currentActiveDate + 'T12:00:00.000Z');
@@ -7969,7 +8141,7 @@ export async function getDynamicDateStatus(): Promise<{
             console.warn('[Dynamic Date] 다음 평일 계산 실패:', error);
         }
     }
-    
+
     return {
         currentActiveDate,
         lastSuccessfulDate,
@@ -7986,37 +8158,37 @@ let isAutoUpdateActive = false;
 
 export async function startAutoNewsUpdate(): Promise<{ success: boolean; message: string }> {
     console.log('[GitBook] 🔄 완벽한 자동 뉴스 업데이트 시스템 시작...');
-    
+
     try {
         // 기존 인터벌이 있다면 정리
         if (autoUpdateInterval) {
             clearInterval(autoUpdateInterval);
         }
-        
+
         // 🚀 페이지 첫 로딩 시 즉시 한 번 체크
         console.log('[GitBook] 📱 페이지 로딩 시 즉시 뉴스 체크 실행...');
         await performSmartNewsUpdate();
-        
+
         // 2시간마다 체크 (2 * 60 * 60 * 1000 = 7,200,000ms)
         const checkInterval = 2 * 60 * 60 * 1000; // 2시간
-        
+
         isAutoUpdateActive = true;
         lastAutoUpdateCheck = Date.now();
-        
+
         autoUpdateInterval = setInterval(async () => {
             console.log('[GitBook] 🕒 자동 업데이트 체크 실행 (2시간 간격)...');
             await performSmartNewsUpdate();
         }, checkInterval);
-        
+
         console.log(`[GitBook] ✅ 완벽한 자동 업데이트 시스템 활성화!`);
         console.log(`[GitBook] 📋 체크 주기: 2시간마다 + 페이지 로드시마다`);
         console.log(`[GitBook] 📋 동작 방식: 현재날짜+1일 체크 → 링크 작동하면 업데이트 → 안하면 현재 날짜 유지`);
-        
+
         return {
             success: true,
             message: `완벽한 자동 뉴스 업데이트 시스템이 활성화되었습니다! (2시간마다 + 페이지 로드시)`
         };
-        
+
     } catch (error) {
         console.error('[GitBook] 자동 업데이트 시스템 시작 실패:', error);
         return {
@@ -8029,38 +8201,38 @@ export async function startAutoNewsUpdate(): Promise<{ success: boolean; message
 // 🧠 스마트한 뉴스 업데이트 함수 (사용자 요구사항 완벽 구현)
 async function performSmartNewsUpdate(): Promise<void> {
     console.log('[GitBook] 🧠 스마트 뉴스 업데이트 시작...');
-    
+
     try {
         // 1단계: 다음 날짜 체크
         const { hasNew, newDate } = await checkForNextDayNews();
-        
+
         if (hasNew && newDate) {
             console.log(`[GitBook] 🎉 새로운 날짜 발견! ${newDate} - 새로운 뉴스 크롤링 시작!`);
-            
+
             // 2단계: 새로운 뉴스 크롤링
             const newNews = await getGitBookLatestNews('kr');
-            
-            if (newNews && newNews.length > 0) {
-                console.log(`[GitBook] ✅ 새로운 뉴스 ${newNews.length}개 크롤링 성공!`);
-                
+
+            if (newNews && newNews.marketNews.length > 0) {
+                console.log(`[GitBook] ✅ 새로운 뉴스 ${newNews.marketNews.length}개 크롤링 성공!`);
+
                 // 3단계: 브라우저 환경에서 알림 및 이벤트 발생
                 if (typeof window !== 'undefined') {
                     (window as any).newNewsAvailable = true;
                     (window as any).latestNewsDate = newDate;
-                    (window as any).newNewsCount = newNews.length;
-                    
+                    (window as any).newNewsCount = newNews.marketNews.length;
+
                     // 커스텀 이벤트 발생
                     window.dispatchEvent(new CustomEvent('newMarketNewsAvailable', {
-                        detail: { 
-                            date: newDate, 
-                            articles: newNews,
+                        detail: {
+                            date: newDate,
+                            articles: newNews.marketNews,
                             message: `새로운 뉴스가 발견되었습니다! (${newDate})`
                         }
                     }));
-                    
+
                     console.log(`[GitBook] 🔔 브라우저에 새로운 뉴스 알림 발송 완료`);
                 }
-                
+
                 lastAutoUpdateCheck = Date.now();
             } else {
                 console.log(`[GitBook] ⚠️ 새로운 날짜는 발견했지만 뉴스 크롤링 실패`);
@@ -8070,7 +8242,7 @@ async function performSmartNewsUpdate(): Promise<void> {
             const currentActiveDate = await getCurrentActiveDate();
             console.log(`[GitBook] 📅 현재 활성 날짜: ${currentActiveDate}`);
         }
-        
+
     } catch (error) {
         console.error('[GitBook] 스마트 뉴스 업데이트 중 오류:', error);
     }
@@ -8078,11 +8250,11 @@ async function performSmartNewsUpdate(): Promise<void> {
 
 export async function stopAutoNewsUpdate(): Promise<{ success: boolean; message: string }> {
     console.log('[GitBook] 🛑 자동 뉴스 업데이트 시스템 중단...');
-    
+
     if (autoUpdateInterval) {
         clearInterval(autoUpdateInterval);
         autoUpdateInterval = null;
-        
+
         return {
             success: true,
             message: '자동 뉴스 업데이트가 중단되었습니다'
@@ -8103,11 +8275,11 @@ export async function getAutoUpdateStatus(): Promise<{
 }> {
     const checkInterval = 2 * 60 * 60 * 1000; // 2시간
     const now = Date.now();
-    
+
     return {
         isActive: autoUpdateInterval !== null,
         lastCheck: lastAutoUpdateCheck,
-        nextCheckIn: lastAutoUpdateCheck > 0 
+        nextCheckIn: lastAutoUpdateCheck > 0
             ? Math.max(0, (lastAutoUpdateCheck + checkInterval) - now)
             : checkInterval,
         checkInterval: checkInterval
@@ -8115,28 +8287,28 @@ export async function getAutoUpdateStatus(): Promise<{
 }
 
 // 🔄 수동으로 다음날 뉴스 체크 및 업데이트
-export async function manualCheckForNewNews(): Promise<{ 
-    success: boolean; 
-    hasNew: boolean; 
-    message: string; 
+export async function manualCheckForNewNews(): Promise<{
+    success: boolean;
+    hasNew: boolean;
+    message: string;
     newDate?: string;
     articles?: NewsArticle[];
 }> {
     console.log('[GitBook] 🔍 수동 새로운 뉴스 체크 실행...');
-    
+
     try {
         const { hasNew, newDate } = await checkForNextDayNews();
-        
+
         if (hasNew && newDate) {
             // 새로운 뉴스 크롤링
             const newNews = await getGitBookLatestNews('kr');
-            
+
             return {
                 success: true,
                 hasNew: true,
                 message: `새로운 뉴스가 발견되었습니다! (${newDate})`,
                 newDate: newDate,
-                articles: newNews
+                articles: newNews.marketNews
             };
         } else {
             return {
@@ -8158,51 +8330,51 @@ export async function manualCheckForNewNews(): Promise<{
 // 🔗 클라이언트용 최신 오선 GitBook URL 계산 함수 (검증 + 롤백 시스템)
 export async function getLatestOsenGitBookUrl(): Promise<{ url: string; date: string; success: boolean }> {
     console.log('[Osen URL] 🚀 스마트한 URL 계산 및 검증 시작...');
-    
+
     try {
         // 1단계: 최신 날짜 찾기 및 검증 (새로운 경로 구조)
         console.log('[Osen URL] 🔍 1단계: 최신 검증된 날짜 찾기...');
         const latestValidDate = await findLatestValidGitBookDate();
-        
+
         if (latestValidDate) {
             const targetUrl = `https://futuresnow.gitbook.io/newstoday/${latestValidDate}/greeting/preview`;
-            
+
             console.log(`[Osen URL] ✅ 검증된 최신 URL 발견: ${latestValidDate} → ${targetUrl}`);
-            
+
             return {
                 url: targetUrl,
                 date: latestValidDate,
                 success: true
             };
         }
-        
+
         throw new Error('검증된 URL을 찾지 못함');
-        
+
     } catch (error) {
         console.error('[Osen URL] ❌ 검증된 URL 찾기 실패:', error);
-        
+
         // 2단계: 폴백 시스템 - 현재 날짜 기준 평일 계산
         console.log('[Osen URL] 🔄 2단계: 폴백 시스템 실행...');
-        
+
         const today = new Date();
         let checkDate = new Date(today);
-        
+
         for (let i = 0; i <= 7; i++) {
             const dayOfWeek = checkDate.getDay();
-            
+
             if (dayOfWeek >= 1 && dayOfWeek <= 5) { // 평일
                 const dateString = checkDate.toISOString().split('T')[0];
                 const fallbackUrl = `https://futuresnow.gitbook.io/newstoday/${dateString}/greeting/preview`;
-                
+
                 console.log(`[Osen URL] 🔄 폴백 URL 시도: ${dateString} → ${fallbackUrl}`);
-                
+
                 // 간단한 접근 테스트
                 try {
-                    const response = await fetch(fallbackUrl, { 
+                    const response = await fetch(fallbackUrl, {
                         method: 'HEAD',
                         signal: AbortSignal.timeout(1000)
                     });
-                    
+
                     if (response.ok) {
                         console.log(`[Osen URL] ✅ 폴백 URL 검증 성공: ${fallbackUrl}`);
                         return {
@@ -8214,7 +8386,7 @@ export async function getLatestOsenGitBookUrl(): Promise<{ url: string; date: st
                 } catch (testError) {
                     console.log(`[Osen URL] ⚠️ 폴백 URL 검증 실패: ${dateString}`);
                 }
-                
+
                 // 검증 실패해도 최신 평일 날짜로 반환 (클라이언트에서 재검증)
                 return {
                     url: fallbackUrl,
@@ -8222,16 +8394,16 @@ export async function getLatestOsenGitBookUrl(): Promise<{ url: string; date: st
                     success: false
                 };
             }
-            
+
             checkDate.setDate(checkDate.getDate() - 1);
         }
-        
+
         // 3단계: 최종 폴백 - 알려진 안정적인 URL
         const finalFallbackDate = '2025-06-30'; // 제공된 안정적인 날짜
         const finalFallbackUrl = `https://futuresnow.gitbook.io/newstoday/${finalFallbackDate}/greeting/preview`;
-        
+
         console.log(`[Osen URL] 🆘 최종 폴백 URL 사용: ${finalFallbackUrl}`);
-        
+
         return {
             url: finalFallbackUrl,
             date: finalFallbackDate,
@@ -8242,58 +8414,97 @@ export async function getLatestOsenGitBookUrl(): Promise<{ url: string; date: st
 
 // 🔍 검증된 최신 GitBook 날짜 찾기 (새로운 동적 시스템과 통합)
 async function findLatestValidGitBookDate(): Promise<string | null> {
-    console.log('[GitBook Valid] 🔍 검증된 최신 날짜 찾기 시작 (동적 시스템 연동)...');
-    
+    console.log('[GitBook Valid] 🔍 검증된 최신 날짜 찾기 시작 (마크다운 우선 시스템)...');
+
     // 1단계: 새로운 동적 시스템에서 현재 활성 날짜 확인
     if (currentActiveDate) {
         console.log(`[GitBook Valid] 📅 동적 시스템 활성 날짜 사용: ${currentActiveDate}`);
         return currentActiveDate;
     }
-    
+
     // 2단계: 백업 날짜 확인
     if (lastSuccessfulDate) {
         console.log(`[GitBook Valid] 🔄 백업 날짜 사용: ${lastSuccessfulDate}`);
         return lastSuccessfulDate;
     }
-    
-    // 3단계: 직접 최신 날짜 찾기 (오늘부터 역순으로 평일 체크)
-    console.log('[GitBook Valid] 🔍 직접 최신 날짜 검색 시작...');
-    
+
+    // 3단계: 직접 최신 날짜 찾기 (오늘부터 역순으로 평일 체크, 마크다운 우선)
+    console.log('[GitBook Valid] 🔍 직접 최신 날짜 검색 시작 (마크다운 우선)...');
+
     const today = new Date();
     let checkDate = new Date(today);
-    
+
     // 최대 10일 전까지 체크
     for (let i = 0; i <= 10; i++) {
         if (isBusinessDay(checkDate)) {
             const dateString = checkDate.toISOString().split('T')[0];
-            const testUrls = [
+
+            // 마크다운 URL 우선 시도
+            const markdownUrls = [
+                `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/bloomberg.md`,
+                `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/undefined.md`
+            ];
+
+            // HTML 폴백 URL
+            const htmlUrls = [
                 `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/bloomberg`,
+                `https://futuresnow.gitbook.io/newstoday/${dateString}/news/today/undefined`,
                 `https://futuresnow.gitbook.io/newstoday/${dateString}/greeting/preview`
             ];
-            
+
             console.log(`[GitBook Valid] 📅 날짜 검증 중: ${dateString}`);
-            
-            // 여러 URL 패턴으로 테스트
-            for (const testUrl of testUrls) {
+
+            // 1. 마크다운 URL 먼저 시도
+            for (const testUrl of markdownUrls) {
                 try {
-                    const response = await fetch(testUrl, { 
+                    console.log(`[GitBook Valid] 🎯 마크다운 URL 시도: ${testUrl}`);
+                    const response = await fetch(testUrl, {
                         method: 'HEAD',
                         headers: {
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                         },
                         signal: AbortSignal.timeout(3000)
                     });
-                    
+
                     if (response.ok) {
-                        console.log(`[GitBook Valid] ✅ 검증된 날짜 발견: ${dateString}`);
-                        
+                        console.log(`[GitBook Valid] ✅ 검증된 날짜 발견 (마크다운): ${dateString}`);
+
                         // 발견한 날짜를 전역 변수에 업데이트
                         if (!currentActiveDate) {
                             currentActiveDate = dateString;
                             lastSuccessfulDate = dateString;
                             console.log(`[GitBook Valid] 🔄 전역 날짜 업데이트: ${dateString}`);
                         }
-                        
+
+                        return dateString;
+                    }
+                } catch (error) {
+                    // 무시하고 다음 URL 시도
+                }
+            }
+
+            // 2. 마크다운 실패시 HTML 폴백
+            for (const testUrl of htmlUrls) {
+                try {
+                    console.log(`[GitBook Valid] 🔄 HTML 폴백 시도: ${testUrl}`);
+                    const response = await fetch(testUrl, {
+                        method: 'HEAD',
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                        },
+                        signal: AbortSignal.timeout(3000)
+                    });
+
+                    if (response.ok) {
+                        console.log(`[GitBook Valid] ✅ 검증된 날짜 발견 (HTML 폴백): ${dateString}`);
+
+                        // 발견한 날짜를 전역 변수에 업데이트
+                        if (!currentActiveDate) {
+                            currentActiveDate = dateString;
+                            lastSuccessfulDate = dateString;
+                            console.log(`[GitBook Valid] 🔄 전역 날짜 업데이트: ${dateString}`);
+                        }
+
                         return dateString;
                     }
                 } catch (error) {
@@ -8301,13 +8512,13 @@ async function findLatestValidGitBookDate(): Promise<string | null> {
                 }
             }
         }
-        
+
         // 하루씩 뒤로 이동
         checkDate.setDate(checkDate.getDate() - 1);
     }
-    
+
     // 4단계: 최종 폴백 - 알려진 안정적인 날짜
-    const fallbackDate = "2025-07-02"; // 현재 알려진 최신 작동 날짜
+    const fallbackDate = "2025-07-25"; // 현재 알려진 최신 작동 날짜
     console.log(`[GitBook Valid] 🆘 최종 폴백 날짜 사용: ${fallbackDate}`);
     return fallbackDate;
 }
@@ -8315,49 +8526,617 @@ async function findLatestValidGitBookDate(): Promise<string | null> {
 // 🔍 새로운 구조(greeting/preview)에서 최신 날짜 찾기 함수
 async function findLatestGitBookDateNewStructure(): Promise<string> {
     console.log('[GitBook New] 🔍 새로운 구조에서 최신 날짜 찾기 시작...');
-    
+
     const today = new Date();
     let checkDate = new Date(today);
-    
+
     // 최대 10일 전까지 역순으로 체크 (평일만)
     for (let i = 0; i <= 10; i++) {
         const dayOfWeek = checkDate.getDay();
-        
+
         // 평일인지 확인 (월요일=1 ~ 금요일=5)
         if (dayOfWeek >= 1 && dayOfWeek <= 5) {
             const dateString = checkDate.toISOString().split('T')[0]; // YYYY-MM-DD 형식
             const testUrl = `https://futuresnow.gitbook.io/newstoday/${dateString}/greeting/preview`;
-            
+
             try {
                 console.log(`[GitBook New] 📅 ${dateString} (${['일', '월', '화', '수', '목', '금', '토'][dayOfWeek]}) 체크: ${testUrl}`);
-                
+
                 // HEAD 요청으로 페이지 존재 확인 (1.5초 타임아웃)
-                const response = await fetch(testUrl, { 
+                const response = await fetch(testUrl, {
                     method: 'HEAD',
                     signal: AbortSignal.timeout(1500)
                 });
-                
+
                 if (response.ok || response.status === 200) {
                     console.log(`[GitBook New] ✅ 최신 날짜 발견: ${dateString} (상태: ${response.status})`);
                     return dateString;
                 } else {
                     console.log(`[GitBook New] ❌ ${dateString} 페이지 없음 (상태: ${response.status})`);
                 }
-                
+
             } catch (error) {
                 console.log(`[GitBook New] ⚠️ ${dateString} 체크 실패:`, error);
             }
         } else {
             console.log(`[GitBook New] ⏭️ ${checkDate.toISOString().split('T')[0]} 주말이므로 건너뛰기`);
         }
-        
+
         // 하루씩 뒤로 이동
         checkDate.setDate(checkDate.getDate() - 1);
     }
-    
+
     // 10일 전까지 없으면 오늘 날짜 반환 (폴백)
     const fallbackDate = today.toISOString().split('T')[0];
     console.log(`[GitBook New] 🆘 최신 날짜를 찾지 못함, 폴백 날짜 사용: ${fallbackDate}`);
     return fallbackDate;
 }
+
+// 🔥 GitBook 주요 일정 크롤링 함수 - 시장 뉴스 시스템과 완전 동기화
+export async function getGitBookSchedule(language: string): Promise<{ scheduleItems: ScheduleItem[], scheduleTitle: string, workingUrl?: string }> {
+    console.log(`[GitBook Schedule] 🚀 주요 일정 크롤링 시작 (언어: ${language})`);
+    console.log(`[GitBook Schedule] 🔍 함수 호출 시점: ${new Date().toISOString()}`);
+
+    try {
+        // 1. 현재 활성 날짜 확인 (뉴스 시스템과 완전 동일한 날짜 사용)
+        if (!currentActiveDate) {
+            console.log('[GitBook Schedule] 📅 현재 활성 날짜가 없음, 최신 날짜 찾기...');
+            currentActiveDate = await findLatestGitBookDate();
+            lastSuccessfulDate = currentActiveDate;
+            console.log(`[GitBook Schedule] ✅ 초기 날짜 설정: ${currentActiveDate}`);
+        }
+
+        // 주요 일정용 마크다운 URL 우선 시도 (undefined.md 사용)
+        let markdownUrl = `https://futuresnow.gitbook.io/newstoday/${currentActiveDate}/news/today/undefined.md`;
+        let fallbackUrl = `https://futuresnow.gitbook.io/newstoday/${currentActiveDate}/news/today/undefined`;
+
+        console.log(`[GitBook Schedule] 📅 현재 활성 날짜 사용: ${currentActiveDate}`);
+        console.log(`[GitBook Schedule] 🎯 마크다운 URL 우선 시도: ${markdownUrl}`);
+        console.log(`[GitBook Schedule] 🎯 폴백 URL: ${fallbackUrl}`);
+
+        let content = '';
+        let finalUrl = markdownUrl;
+        let isMarkdown = true;
+
+        // 2. 마크다운 URL 먼저 시도
+        try {
+            console.log(`[GitBook Schedule] 🔍 마크다운 콘텐츠 가져오기 시도: ${markdownUrl}`);
+
+            const markdownResponse = await fetch(markdownUrl, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'text/markdown,text/plain,*/*',
+                    'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8',
+                    'Cache-Control': 'no-cache'
+                },
+                signal: AbortSignal.timeout(5000) // 5초 타임아웃
+            });
+
+            if (markdownResponse.ok) {
+                content = await markdownResponse.text();
+                console.log(`[GitBook Schedule] ✅ 마크다운 콘텐츠 수신 완료: ${content.length} characters`);
+
+                // 마크다운 콘텐츠가 유효한지 확인
+                if (content.includes('## 경제지표') || content.includes('경제지표') || content.includes('|')) {
+                    console.log(`[GitBook Schedule] ✅ 유효한 마크다운 콘텐츠 확인`);
+                } else {
+                    throw new Error('마크다운에서 경제지표 섹션을 찾을 수 없음');
+                }
+            } else {
+                throw new Error(`마크다운 URL 접근 실패: ${markdownResponse.status}`);
+            }
+
+        } catch (markdownError) {
+            console.log(`[GitBook Schedule] ⚠️ 마크다운 URL 실패, HTML 폴백 시도:`, markdownError);
+            isMarkdown = false;
+            finalUrl = fallbackUrl;
+
+            // 3. HTML 폴백 시도
+            try {
+                // 현재 날짜 링크 유효성 확인 (빠른 HEAD 요청)
+                console.log(`[GitBook Schedule] 🔍 HEAD 요청으로 HTML 링크 유효성 확인: ${fallbackUrl}`);
+
+                const headResponse = await fetch(fallbackUrl, {
+                    method: 'HEAD',
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    },
+                    signal: AbortSignal.timeout(3000) // 3초 타임아웃
+                });
+
+                if (!headResponse.ok) {
+                    console.log(`[GitBook Schedule] ⚠️ 현재 날짜 ${currentActiveDate} 페이지 접근 불가 (${headResponse.status})`);
+
+                    // 롤백: 마지막 성공 날짜로 복구
+                    if (lastSuccessfulDate && lastSuccessfulDate !== currentActiveDate) {
+                        console.log(`[GitBook Schedule] 🔄 롤백 실행: ${currentActiveDate} → ${lastSuccessfulDate}`);
+                        currentActiveDate = lastSuccessfulDate;
+                        finalUrl = `https://futuresnow.gitbook.io/newstoday/${currentActiveDate}/news/today/undefined`;
+                        console.log(`[GitBook Schedule] ✅ 롤백 완료, 새 URL: ${finalUrl}`);
+                    } else {
+                        // 최신 유효 날짜 찾기
+                        console.log('[GitBook Schedule] 🔍 새로운 유효 날짜 찾기 시도...');
+                        const fallbackDate = await findLatestValidGitBookDate();
+                        if (fallbackDate) {
+                            currentActiveDate = fallbackDate;
+                            lastSuccessfulDate = fallbackDate;
+                            finalUrl = `https://futuresnow.gitbook.io/newstoday/${fallbackDate}/news/today/undefined`;
+                            console.log(`[GitBook Schedule] ✅ 새로운 유효 날짜 발견: ${fallbackDate}`);
+                        }
+                    }
+                } else {
+                    console.log(`[GitBook Schedule] ✅ 현재 날짜 ${currentActiveDate} HTML 페이지 접근 가능`);
+                    lastSuccessfulDate = currentActiveDate;
+                }
+
+                // HTML 콘텐츠 가져오기
+                console.log(`[GitBook Schedule] 📥 HTML 콘텐츠 가져오기: ${finalUrl}`);
+
+                const htmlResponse = await fetch(finalUrl, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                        'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8',
+                        'Cache-Control': 'no-cache',
+                        'Connection': 'keep-alive'
+                    },
+                    signal: AbortSignal.timeout(8000) // 8초로 조정
+                });
+
+                if (!htmlResponse.ok) {
+                    throw new Error(`GitBook Schedule HTTP ${htmlResponse.status}: ${htmlResponse.statusText}`);
+                }
+
+                content = await htmlResponse.text();
+                console.log(`[GitBook Schedule] ✅ HTML 콘텐츠 수신 완료: ${content.length} characters`);
+
+            } catch (htmlError) {
+                console.error(`[GitBook Schedule] ❌ HTML 폴백도 실패:`, htmlError);
+                throw htmlError;
+            }
+        }
+
+        // 4. 주요 일정 추출 (마크다운 우선, HTML 폴백)
+        console.log(`[GitBook Schedule] 📊 일정 파싱 시작 (${isMarkdown ? '마크다운' : 'HTML'} 모드)`);
+        console.log(`[GitBook Schedule] 📄 크롤링된 콘텐츠 미리보기 (처음 500자):`);
+        console.log(content.substring(0, 500));
+        console.log(`[GitBook Schedule] 📄 콘텐츠 총 길이: ${content.length} characters`);
         
+        const scheduleItems = parseGitBookSchedule(content, finalUrl);
+        console.log(`[GitBook Schedule] 📅 청사진 방법론으로 일정 ${scheduleItems.length}개 추출`);
+        
+        // 최종 URL을 workingUrl로 설정 (스마트 링크 시스템 활용)
+        const workingUrl = finalUrl;
+
+        // 5. 동적 제목 생성
+        const scheduleTitle = generateScheduleTitleFromItems(scheduleItems, language, finalUrl);
+
+        console.log(`[GitBook Schedule] ✅ 일정 크롤링 완료: ${scheduleItems.length}개 항목`);
+        console.log(`[GitBook Schedule] 📋 제목: ${scheduleTitle}`);
+
+        // 6. 성공한 날짜 업데이트
+        lastSuccessfulDate = currentActiveDate;
+
+        return {
+            scheduleItems,
+            scheduleTitle,
+            workingUrl: finalUrl.replace('.md', '') // 실제로 작동하는 링크에서 .md 제거
+        };
+
+    } catch (error: unknown) {
+        console.error(`[GitBook Schedule] ❌ 일정 크롤링 실패:`, error);
+        console.error(`[GitBook Schedule] 🔍 에러 타입:`, typeof error);
+        
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorStack = error instanceof Error ? error.stack : 'No stack trace available';
+        
+        console.error(`[GitBook Schedule] 🔍 에러 메시지:`, errorMessage);
+        console.error(`[GitBook Schedule] 🔍 에러 스택:`, errorStack);
+
+        // 폴백: 기본 일정 반환
+        console.log(`[GitBook Schedule] 🛡️ 폴백 일정으로 전환...`);
+        const fallbackResult = getFallbackSchedule(language);
+        console.log(`[GitBook Schedule] 🛡️ 폴백 일정 반환:`, fallbackResult);
+        return fallbackResult;
+    }
+}
+
+// 🔄 일정 자동 업데이트 시스템 (뉴스 시스템과 동일한 패턴)
+export async function startAutoScheduleUpdate(): Promise<{ success: boolean; message: string }> {
+    console.log('[Schedule Auto Update] 🚀 일정 자동 업데이트 시스템 시작...');
+
+    try {
+        // 초기 일정 데이터 로드
+        console.log('[Schedule Auto Update] 📅 초기 일정 데이터 로드...');
+        const initialSchedule = await getGitBookSchedule('kr');
+
+        if (initialSchedule.scheduleItems.length > 0) {
+            console.log(`[Schedule Auto Update] ✅ 초기 일정 ${initialSchedule.scheduleItems.length}개 로드 완료`);
+
+            // 글로벌 일정 데이터 저장
+            (global as any).globalScheduleItems = initialSchedule.scheduleItems;
+            (global as any).globalScheduleTitle = initialSchedule.scheduleTitle;
+        }
+
+        // 30분마다 새로운 일정 체크
+        const scheduleUpdateInterval = setInterval(async () => {
+            try {
+                console.log('[Schedule Auto Update] 🔄 새로운 일정 체크 중...');
+
+                const newSchedule = await getGitBookSchedule('kr');
+
+                if (newSchedule.scheduleItems.length > 0) {
+                    const previousCount = (global as any).globalScheduleItems?.length || 0;
+                    const newCount = newSchedule.scheduleItems.length;
+
+                    // 일정 변경 감지
+                    if (newCount !== previousCount ||
+                        JSON.stringify(newSchedule.scheduleItems) !== JSON.stringify((global as any).globalScheduleItems)) {
+
+                        console.log(`[Schedule Auto Update] 📅 일정 변경 감지! 이전: ${previousCount}개 → 현재: ${newCount}개`);
+
+                        // 글로벌 일정 업데이트
+                        (global as any).globalScheduleItems = newSchedule.scheduleItems;
+                        (global as any).globalScheduleTitle = newSchedule.scheduleTitle;
+                        (global as any).globalScheduleWorkingUrl = newSchedule.workingUrl;
+
+                        // 브라우저에 새로운 일정 이벤트 발송
+                        if (typeof window !== 'undefined') {
+                            const scheduleUpdateEvent = new CustomEvent('newScheduleAvailable', {
+                                detail: {
+                                    date: currentActiveDate,
+                                    scheduleItems: newSchedule.scheduleItems,
+                                    scheduleTitle: newSchedule.scheduleTitle,
+                                    workingUrl: newSchedule.workingUrl,
+                                    timestamp: new Date().toISOString()
+                                }
+                            });
+
+                            window.dispatchEvent(scheduleUpdateEvent);
+                            console.log('[Schedule Auto Update] 📡 새로운 일정 이벤트 발송 완료');
+                        }
+                    } else {
+                        console.log('[Schedule Auto Update] ✅ 일정 변경 없음');
+                    }
+                }
+
+            } catch (error) {
+                console.error('[Schedule Auto Update] ❌ 일정 업데이트 체크 실패:', error);
+            }
+        }, 30 * 60 * 1000); // 30분마다
+
+        // 정리 함수 등록
+        if (typeof process !== 'undefined') {
+            process.on('SIGTERM', () => {
+                console.log('[Schedule Auto Update] 🛑 일정 업데이트 시스템 종료...');
+                clearInterval(scheduleUpdateInterval);
+            });
+        }
+
+        console.log('[Schedule Auto Update] ✅ 일정 자동 업데이트 시스템 시작 완료');
+
+        return {
+            success: true,
+            message: '일정 자동 업데이트 시스템이 성공적으로 시작되었습니다.'
+        };
+
+    } catch (error) {
+        console.error('[Schedule Auto Update] ❌ 시스템 시작 실패:', error);
+
+        return {
+            success: false,
+            message: `일정 자동 업데이트 시스템 시작 실패: ${error instanceof Error ? error.message : '알 수 없는 오류'}`
+        };
+    }
+}
+
+// 🔄 수동 일정 업데이트 체크 함수
+export async function manualCheckForNewSchedule(): Promise<{ hasNew: boolean; scheduleItems?: any[]; scheduleTitle?: string; message: string }> {
+    console.log('[Manual Schedule Check] 🔍 수동 일정 업데이트 체크 시작...');
+
+    try {
+        const newSchedule = await getGitBookSchedule('kr');
+
+        if (newSchedule.scheduleItems.length > 0) {
+            const previousCount = (global as any).globalScheduleItems?.length || 0;
+            const newCount = newSchedule.scheduleItems.length;
+
+            // 일정 변경 감지
+            const hasChanges = newCount !== previousCount ||
+                JSON.stringify(newSchedule.scheduleItems) !== JSON.stringify((global as any).globalScheduleItems);
+
+            if (hasChanges) {
+                console.log(`[Manual Schedule Check] 📅 새로운 일정 발견! ${previousCount}개 → ${newCount}개`);
+
+                // 글로벌 일정 업데이트
+                (global as any).globalScheduleItems = newSchedule.scheduleItems;
+                (global as any).globalScheduleTitle = newSchedule.scheduleTitle;
+
+                return {
+                    hasNew: true,
+                    scheduleItems: newSchedule.scheduleItems,
+                    scheduleTitle: newSchedule.scheduleTitle,
+                    message: `새로운 일정 ${newCount}개를 발견했습니다.`
+                };
+            } else {
+                console.log('[Manual Schedule Check] ✅ 일정 변경 없음');
+
+                return {
+                    hasNew: false,
+                    message: '새로운 일정이 없습니다.'
+                };
+            }
+        }
+
+        return {
+            hasNew: false,
+            message: '일정 데이터를 가져올 수 없습니다.'
+        };
+
+    } catch (error) {
+        console.error('[Manual Schedule Check] ❌ 수동 체크 실패:', error);
+
+        return {
+            hasNew: false,
+            message: `일정 체크 실패: ${error instanceof Error ? error.message : '알 수 없는 오류'}`
+        };
+    }
+}
+
+// 🛡️ 일정 폴백 시스템
+function getFallbackSchedule(language: string): { scheduleItems: ScheduleItem[], scheduleTitle: string, workingUrl?: string } {
+    const today = new Date();
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const formatDate = (date: Date): string => {
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${month}/${day}`;
+    };
+
+    const tomorrowStr = formatDate(tomorrow);
+
+    const fallbackItems: ScheduleItem[] = [
+        {
+            date: tomorrowStr,
+            time: '21:30',
+            country: '미국',
+            indicator: '연방준비제도 정책 발표',
+            importance: 'HIGH',
+            source: '오선 (Osen)',
+            url: `https://futuresnow.gitbook.io/newstoday/${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}/news/today/undefined`,
+            publishedAt: new Date().toISOString(),
+            language: 'kr',
+            category: 'economic-schedule'
+        },
+        {
+            date: tomorrowStr,
+            time: '23:00',
+            country: '미국',
+            indicator: '소비자물가지수 (CPI)',
+            importance: 'HIGH',
+            source: '오선 (Osen)',
+            url: `https://futuresnow.gitbook.io/newstoday/${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}/news/today/undefined`,
+            publishedAt: new Date().toISOString(),
+            language: 'kr',
+            category: 'economic-schedule'
+        }
+    ];
+
+    const fallbackTitle = language === 'kr'
+        ? `📅 다음날 주요 일정 - (${tomorrowStr}) 경제지표`
+        : `📅 Tomorrow's Key Schedule - (${tomorrowStr}) Economic Indicators`;
+
+    console.log(`[Schedule Fallback] 폴백 일정 생성: ${fallbackItems.length}개 항목`);
+
+    // 폴백 시에는 기본 URL 생성 (이미 선언된 today 변수 재사용)
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    const dateStr = `${year}-${month}-${day}`;
+    const fallbackWorkingUrl = `https://futuresnow.gitbook.io/newstoday/${dateStr}/news/today/undefined`;
+
+    return {
+        scheduleItems: fallbackItems,
+        scheduleTitle: fallbackTitle,
+        workingUrl: fallbackWorkingUrl
+    };
+}
+
+// 🌐 글로벌 일정 데이터 접근 함수
+export async function getGlobalSchedule(): Promise<string[]> {
+    try {
+        const globalScheduleItems = (global as any).globalScheduleItems || [];
+
+        if (globalScheduleItems.length > 0) {
+            const scheduleStrings = globalScheduleItems.slice(0, 5).map((item: ScheduleItem) =>
+                `${item.date} ${item.time} ${item.country} - ${item.indicator} (${item.importance})`
+            );
+
+            console.log(`[Global Schedule] 글로벌 일정 ${scheduleStrings.length}개 반환`);
+            return scheduleStrings;
+        }
+
+        console.log('[Global Schedule] 글로벌 일정 데이터 없음, 빈 배열 반환');
+        return [];
+
+    } catch (error) {
+        console.error('[Global Schedule] 글로벌 일정 접근 실패:', error);
+        return [];
+    }
+}
+
+// 🔗 최신 주요 일정 출처 링크 가져오기 함수
+export async function getLatestScheduleSourceUrl(): Promise<string> {
+    try {
+        // 현재 활성 날짜가 있으면 사용
+        if (currentActiveDate) {
+            const sourceUrl = `https://futuresnow.gitbook.io/newstoday/${currentActiveDate}/news/today/undefined`;
+            console.log(`[Schedule Source URL] 현재 활성 날짜 사용: ${sourceUrl}`);
+            return sourceUrl;
+        }
+
+        // 없으면 최신 유효 날짜 찾기
+        const latestDate = await findLatestValidGitBookDate();
+        if (latestDate) {
+            const sourceUrl = `https://futuresnow.gitbook.io/newstoday/${latestDate}/news/today/undefined`;
+            console.log(`[Schedule Source URL] 최신 유효 날짜 사용: ${sourceUrl}`);
+            return sourceUrl;
+        }
+
+        // 최종 폴백: 고정 날짜 사용
+        const fallbackUrl = `https://futuresnow.gitbook.io/newstoday/2025-07-25/news/today/undefined`;
+        console.log(`[Schedule Source URL] 폴백 URL 사용: ${fallbackUrl}`);
+        return fallbackUrl;
+
+    } catch (error) {
+        console.error('[Schedule Source URL] 오류 발생:', error);
+        // 에러 시 폴백 URL 반환
+        return `https://futuresnow.gitbook.io/newstoday/2025-07-25/news/today/undefined`;
+    }
+}
+
+// � 일정 제목  생성 함수
+function generateScheduleTitleFromItems(scheduleItems: ScheduleItem[], language: string, targetUrl: string): string {
+    const isKorean = language === 'kr';
+    const today = new Date();
+    const dateStr = `${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
+
+    if (scheduleItems.length === 0) {
+        return isKorean
+            ? `📅 주요 일정 - ${dateStr} (데이터 없음)`
+            : `📅 Key Schedule - ${dateStr} (No Data)`;
+    }
+
+    // 고중요도 일정 개수 계산
+    const highImportanceCount = scheduleItems.filter(item =>
+        item.importance === 'HIGH' || item.importance.includes('★★★')
+    ).length;
+
+    // 국가별 분류
+    const countries = [...new Set(scheduleItems.map(item => item.country))];
+    const countryText = countries.length > 2
+        ? isKorean ? `${countries.slice(0, 2).join(', ')} 외 ${countries.length - 2}개국` : `${countries.slice(0, 2).join(', ')} +${countries.length - 2} more`
+        : countries.join(', ');
+
+    if (isKorean) {
+        return highImportanceCount > 0
+            ? `📅 주요 일정 - ${dateStr} (${countryText}, 고중요 ${highImportanceCount}개)`
+            : `📅 주요 일정 - ${dateStr} (${countryText}, 총 ${scheduleItems.length}개)`;
+    } else {
+        return highImportanceCount > 0
+            ? `📅 Key Schedule - ${dateStr} (${countryText}, ${highImportanceCount} High Priority)`
+            : `📅 Key Schedule - ${dateStr} (${countryText}, ${scheduleItems.length} Total)`;
+    }
+}
+
+// 🔄 주요 일정 수동 새로고침 함수
+export async function refreshScheduleData(force: boolean = false): Promise<{ success: boolean; message: string; data?: any }> {
+    console.log(`[Schedule Refresh] 수동 일정 새로고침 요청 (force: ${force})`);
+
+    try {
+        const result = await getGitBookSchedule('kr');
+
+        if (result.scheduleItems.length > 0) {
+            console.log(`[Schedule Refresh] ✅ 일정 새로고침 성공: ${result.scheduleItems.length}개 항목`);
+            return {
+                success: true,
+                message: `일정 데이터가 성공적으로 새로고침되었습니다. (${result.scheduleItems.length}개 항목)`,
+                data: result
+            };
+        } else {
+            console.log('[Schedule Refresh] ⚠️ 일정 데이터가 비어있음');
+            return {
+                success: false,
+                message: '일정 데이터를 가져올 수 없습니다.',
+                data: result
+            };
+        }
+
+    } catch (error) {
+        console.error('[Schedule Refresh] ❌ 일정 새로고침 실패:', error);
+        return {
+            success: false,
+            message: '일정 새로고침 중 오류가 발생했습니다.'
+        };
+    }
+}
+
+// 🔍 일정 필터링 함수들
+export async function getFilteredSchedule(
+    importance?: 'HIGH' | 'MEDIUM' | 'LOW' | 'all',
+    country?: string,
+    dateFilter?: 'today' | 'tomorrow' | 'all'
+): Promise<{ scheduleItems: ScheduleItem[], scheduleTitle: string }> {
+    console.log(`[Schedule Filter] 필터링된 일정 요청 - 중요도: ${importance}, 국가: ${country}, 날짜: ${dateFilter}`);
+
+    try {
+        // 전체 일정 데이터 가져오기
+        const result = await getGitBookSchedule('kr');
+        let filteredItems = result.scheduleItems;
+
+        // 중요도 필터링
+        if (importance && importance !== 'all') {
+            filteredItems = filteredItems.filter(item => item.importance === importance);
+        }
+
+        // 국가 필터링
+        if (country && country !== 'all') {
+            filteredItems = filteredItems.filter(item => item.country.includes(country));
+        }
+
+        // 날짜 필터링
+        if (dateFilter && dateFilter !== 'all') {
+            const today = new Date();
+            const tomorrow = new Date(today);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+
+            const formatDate = (date: Date): string => {
+                const month = String(date.getMonth() + 1).padStart(2, '0');
+                const day = String(date.getDate()).padStart(2, '0');
+                return `${month}/${day}`;
+            };
+
+            const todayStr = formatDate(today);
+            const tomorrowStr = formatDate(tomorrow);
+
+            if (dateFilter === 'today') {
+                filteredItems = filteredItems.filter(item => item.date.includes(todayStr));
+            } else if (dateFilter === 'tomorrow') {
+                filteredItems = filteredItems.filter(item => item.date.includes(tomorrowStr));
+            }
+        }
+
+        console.log(`[Schedule Filter] ✅ 필터링 완료: ${filteredItems.length}개 항목`);
+
+        return {
+            scheduleItems: filteredItems,
+            scheduleTitle: result.scheduleTitle
+        };
+
+    } catch (error) {
+        console.error('[Schedule Filter] ❌ 필터링 실패:', error);
+
+        // 폴백: 빈 일정 반환
+        const today = new Date();
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+
+        const formatDate = (date: Date): string => {
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${month}/${day}`;
+        };
+
+        const tomorrowStr = formatDate(tomorrow);
+        const scheduleTitle = `📅 다음날 주요 일정 - (${tomorrowStr}) 경제지표`;
+
+        return {
+            scheduleItems: [],
+            scheduleTitle
+        };
+    }
+}
+
+

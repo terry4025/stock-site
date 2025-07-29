@@ -17,7 +17,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   const [language, setLanguage] = useState<Language>("kr");
 
   const t = useCallback((key: string): string => {
-    return translations[language][key] || key;
+    return (translations[language] as any)[key] || key;
   }, [language]);
 
   return (
